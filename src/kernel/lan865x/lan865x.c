@@ -66,13 +66,15 @@ static struct oa_tc6* g_tc6;
 
 #define FXL6408_I2C_BUS   20
 #define FXL6408_I2C_ADDR   0x43
+#define NODE_ID_OFFSET 0x0F
+#define NODE_ID_LEN 1
 
 /* ---------- Helper Functions for Register Access ---------- */
 static int read_nodeid_from_fxl6408(struct device *dev)
 {
     struct i2c_adapter *adap;
     struct i2c_msg msgs[2];
-    u8 reg = 0x0F;
+    u8 reg = NODE_ID_OFFSET;
     u8 val = 0;
     int ret;
     int node_id;
@@ -84,18 +86,18 @@ static int read_nodeid_from_fxl6408(struct device *dev)
     }
 
     /* write reg address (0x0F) */
-    msgs[0].addr  = 0x43;
+    msgs[0].addr  = FXL6408_I2C_ADDR;
     msgs[0].flags = 0;
-    msgs[0].len   = 1;
+    msgs[0].len   = NODE_ID_LEN;
     msgs[0].buf   = &reg;
 
     /* read data */
-    msgs[1].addr  = 0x43;
+    msgs[1].addr  = FXL6408_I2C_ADDR;
     msgs[1].flags = I2C_M_RD;
-    msgs[1].len   = 1;
+    msgs[1].len   = NODE_ID_LEN;
     msgs[1].buf   = &val;
 
-    ret = i2c_transfer(adap, msgs, 2);
+    ret = i2c_transfer(adap, msgs, sizeof(msgs)/sizeof(struct i2c_msg));
     i2c_put_adapter(adap);
 
     if (ret < 0) {
