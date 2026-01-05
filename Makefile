@@ -101,7 +101,7 @@ endif
 $(BUILD_DIR)/Makefile:
 	@mkdir -p $(BUILD_DIR)
 	@echo "obj-m := $(DRIVER_NAME).o" > $@
-	@echo "$(DRIVER_NAME)-y := ../$(SRC_DIR)/lan865x.o ../src/kernel/oa_tc6.o" >> $@
+	@echo "$(DRIVER_NAME)-y := ../$(SRC_DIR)/lan865x.o ../$(SRC_DIR)/lan865x_ptp.o ../$(SRC_DIR)/lan865x_arch.o ../src/kernel/oa_tc6.o" >> $@
 	@echo "ccflags-y := $(DRIVER_INCLUDES) $(EXTRA_CFLAGS)" >> $@
 
 # ========================

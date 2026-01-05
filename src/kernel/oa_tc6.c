@@ -6,6 +6,9 @@
  */
 
 #include "oa_tc6.h"
+#ifdef FRAME_TIMESTAMP_ENABLE
+#include "lan865x/lan865x_arch.h"
+#endif /* FRAME_TIMESTAMP_ENABLE */
 #include <linux/bitfield.h>
 #include <linux/iopoll.h>
 #include <linux/phy.h>
@@ -81,6 +84,9 @@
 #define OA_TC6_DATA_HEADER_START_WORD_OFFSET GENMASK(19, 16)
 #define OA_TC6_DATA_HEADER_END_VALID BIT(14)
 #define OA_TC6_DATA_HEADER_END_BYTE_OFFSET GENMASK(13, 8)
+#ifdef FRAME_TIMESTAMP_ENABLE
+#define OA_TC6_DATA_HEADER_TIME_STAMP_CAPTURE GENMASK(7, 6)
+#endif /* FRAME_TIMESTAMP_ENABLE */
 #define OA_TC6_DATA_HEADER_PARITY BIT(0)
 
 /* Data footer */
@@ -144,6 +150,10 @@ struct oa_tc6 {
 	u8 rx_chunks_available;
 	bool rx_buf_overflow;
 	bool int_flag;
+#ifdef FRAME_TIMESTAMP_ENABLE
+	u8 ongoing_tx_ts_capture_mode;
+	u8 waiting_tx_ts_capture_mode;
+#endif /* FRAME_TIMESTAMP_ENABLE */
 };
 
 enum oa_tc6_header_type {
@@ -988,8 +998,13 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 	return 0;
 }
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+static __be32 oa_tc6_prepare_data_header(bool data_valid, bool start_valid,
+					 bool end_valid, u8 end_byte_offset, u8 ts_capture_mode)
+#else /* FRAME_TIMESTAMP_ENABLE */
 static __be32 oa_tc6_prepare_data_header(bool data_valid, bool start_valid,
 					 bool end_valid, u8 end_byte_offset)
+#endif /* FRAME_TIMESTAMP_ENABLE */
 {
 	u32 header =
 		FIELD_PREP(OA_TC6_DATA_HEADER_DATA_NOT_CTRL,
@@ -998,6 +1013,9 @@ static __be32 oa_tc6_prepare_data_header(bool data_valid, bool start_valid,
 		FIELD_PREP(OA_TC6_DATA_HEADER_START_VALID, start_valid) |
 		FIELD_PREP(OA_TC6_DATA_HEADER_END_VALID, end_valid) |
 		FIELD_PREP(OA_TC6_DATA_HEADER_END_BYTE_OFFSET, end_byte_offset);
+#ifdef FRAME_TIMESTAMP_ENABLE
+	header |= FIELD_PREP(OA_TC6_DATA_HEADER_TIME_STAMP_CAPTURE, ts_capture_mode);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 	header |= FIELD_PREP(OA_TC6_DATA_HEADER_PARITY,
 			     oa_tc6_get_parity(header));
@@ -1014,6 +1032,9 @@ static void oa_tc6_add_tx_skb_to_spi_buf(struct oa_tc6 *tc6)
 	enum oa_tc6_data_start_valid_info start_valid;
 	u8 end_byte_offset = 0;
 	u16 length_to_copy;
+#ifdef FRAME_TIMESTAMP_ENABLE
+	u8 ts_capture_mode = 0;
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 	/* Initial value is assigned here to avoid more than 80 characters in
 	 * the declaration place.
@@ -1047,10 +1068,19 @@ static void oa_tc6_add_tx_skb_to_spi_buf(struct oa_tc6 *tc6)
 		tc6->netdev->stats.tx_packets++;
 		kfree_skb(tc6->ongoing_tx_skb);
 		tc6->ongoing_tx_skb = NULL;
+#ifdef FRAME_TIMESTAMP_ENABLE
+		ts_capture_mode = tc6->ongoing_tx_ts_capture_mode;
+		tc6->ongoing_tx_ts_capture_mode = 0;
+#endif /* FRAME_TIMESTAMP_ENABLE */
 	}
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+	*tx_buf = oa_tc6_prepare_data_header(OA_TC6_DATA_VALID, start_valid,
+					     end_valid, end_byte_offset, ts_capture_mode);
+#else /* FRAME_TIMESTAMP_ENABLE */
 	*tx_buf = oa_tc6_prepare_data_header(OA_TC6_DATA_VALID, start_valid,
 					     end_valid, end_byte_offset);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 	tc6->spi_data_tx_buf_offset += OA_TC6_CHUNK_SIZE;
 }
 
@@ -1067,6 +1097,10 @@ static u16 oa_tc6_prepare_spi_tx_buf_for_tx_skbs(struct oa_tc6 *tc6)
 			spin_lock_bh(&tc6->tx_skb_lock);
 			tc6->ongoing_tx_skb = tc6->waiting_tx_skb;
 			tc6->waiting_tx_skb = NULL;
+#ifdef FRAME_TIMESTAMP_ENABLE
+			tc6->ongoing_tx_ts_capture_mode = tc6->waiting_tx_ts_capture_mode;
+			tc6->waiting_tx_ts_capture_mode = 0;
+#endif /* FRAME_TIMESTAMP_ENABLE */
 			spin_unlock_bh(&tc6->tx_skb_lock);
 		}
 		if (!tc6->ongoing_tx_skb)
@@ -1082,9 +1116,15 @@ static void oa_tc6_add_empty_chunks_to_spi_buf(struct oa_tc6 *tc6,
 {
 	__be32 header;
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+	header = oa_tc6_prepare_data_header(OA_TC6_DATA_INVALID,
+					    OA_TC6_DATA_START_INVALID,
+					    OA_TC6_DATA_END_INVALID, 0, 0);
+#else /* FRAME_TIMESTAMP_ENABLE */
 	header = oa_tc6_prepare_data_header(OA_TC6_DATA_INVALID,
 					    OA_TC6_DATA_START_INVALID,
 					    OA_TC6_DATA_END_INVALID, 0);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 	while (needed_empty_chunks--) {
 		__be32 *tx_buf =
@@ -1256,11 +1296,16 @@ EXPORT_SYMBOL_GPL(oa_tc6_zero_align_receive_frame_enable);
  * frame.
  * @tc6: oa_tc6 struct.
  * @skb: socket buffer in which the ethernet frame is stored.
+ * @ts_capture_mode: timestamp capture mode (only used if FRAME_TIMESTAMP_ENABLE is defined).
  *
  * Return: NETDEV_TX_OK if the transmit ethernet frame skb added in the tx_skb_q
  * otherwise returns NETDEV_TX_BUSY.
  */
+#ifdef FRAME_TIMESTAMP_ENABLE
+netdev_tx_t oa_tc6_start_xmit(struct oa_tc6 *tc6, struct sk_buff *skb, u8 ts_capture_mode)
+#else /* FRAME_TIMESTAMP_ENABLE */
 netdev_tx_t oa_tc6_start_xmit(struct oa_tc6 *tc6, struct sk_buff *skb)
+#endif /* FRAME_TIMESTAMP_ENABLE */
 {
 	if (tc6->waiting_tx_skb) {
 		netif_stop_queue(tc6->netdev);
@@ -1275,6 +1320,9 @@ netdev_tx_t oa_tc6_start_xmit(struct oa_tc6 *tc6, struct sk_buff *skb)
 
 	spin_lock_bh(&tc6->tx_skb_lock);
 	tc6->waiting_tx_skb = skb;
+#ifdef FRAME_TIMESTAMP_ENABLE
+	tc6->waiting_tx_ts_capture_mode = ts_capture_mode;
+#endif /* FRAME_TIMESTAMP_ENABLE */
 	spin_unlock_bh(&tc6->tx_skb_lock);
 
 	/* Wake spi kthread to perform spi transfer */
