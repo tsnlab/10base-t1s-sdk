@@ -23,6 +23,7 @@
 #include <linux/err.h>
 
 #include "lan865x_ioctl.h"
+#include "lan865x_sysfs.h"
 #include <linux/oa_tc6.h>
 
 #define DRV_NAME "lan8650"
@@ -60,6 +61,8 @@ struct lan865x_priv {
     struct net_device *netdev;
     struct spi_device *spi;
     struct oa_tc6 *tc6;
+
+    u8 node_id;
 };
 
 static struct oa_tc6* g_tc6;
@@ -68,6 +71,12 @@ static struct oa_tc6* g_tc6;
 #define FXL6408_I2C_ADDR   0x43
 #define NODE_ID_OFFSET 0x0F
 #define NODE_ID_LEN 1
+
+int lan865x_get_node_id(struct lan865x_priv *priv)
+{
+    pr_info("lan865x: get_node_id=%d\n", priv->node_id);
+    return priv->node_id;
+}
 
 /* ---------- Helper Functions for Register Access ---------- */
 static int read_nodeid_from_fxl6408(struct device *dev)
@@ -453,12 +462,13 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
     }
 #endif
 
-int node_id = read_nodeid_from_fxl6408(dev);
+    int node_id = read_nodeid_from_fxl6408(dev);
     if (node_id < 0)
     {
         dev_err(dev, "Failed to get node_id from i2c, Set to default 0x0F\n");
         node_id = 0x0F;
     }
+    priv->node_id = node_id;
     lan865x_set_nodeid(priv, node_id);
 
 #ifdef ENABLE_DIPSWITCH
@@ -542,6 +552,13 @@ static int lan865x_probe(struct spi_device *spi)
         return ret;
     }
 
+    /* Create sysfs device */
+    ret = lan865x_sysfs_create_device(priv);
+    if (ret) {
+        dev_warn(&spi->dev, "Failed to create sysfs device: %d\n", ret);
+        /* Continue even if sysfs creation fails */
+    }
+
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
     return 0;
 }
@@ -563,6 +580,9 @@ static void lan865x_remove(struct spi_device *spi)
     }
 
     cancel_work_sync(&priv->multicast_work);
+
+    /* Remove sysfs device */
+    lan865x_sysfs_remove_device(priv);
 
     dev_info(&spi->dev, "lan865x: unregistering netdev %s\n", netdev_name(netdev));
     dev_info(&spi->dev, "lan865x: MAC before unregister %pM\n", netdev->dev_addr);
@@ -647,7 +667,29 @@ static struct spi_driver lan865x_driver = {
     .remove = lan865x_remove,
 };
 
-module_spi_driver(lan865x_driver);
+static int __init lan865x_init(void)
+{
+    int ret;
+
+    /* Initialize sysfs */
+    ret = lan865x_sysfs_init();
+    if (ret) {
+        pr_err("lan865x: failed to initialize sysfs: %d\n", ret);
+        return ret;
+    }
+
+    /* Register SPI driver */
+    return spi_register_driver(&lan865x_driver);
+}
+
+static void __exit lan865x_exit(void)
+{
+    spi_unregister_driver(&lan865x_driver);
+    lan865x_sysfs_exit();
+}
+
+module_init(lan865x_init);
+module_exit(lan865x_exit);
 
 MODULE_DESCRIPTION("LAN865x 10Base-T1S MACPHY Ethernet Driver (Standalone)");
 MODULE_AUTHOR("Microchip / sbcho integration");
