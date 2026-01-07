@@ -8,6 +8,8 @@
 #include "oa_tc6.h"
 #ifdef FRAME_TIMESTAMP_ENABLE
 #include "lan865x/lan865x_arch.h"
+#include <linux/ptp_classify.h>
+#include <linux/if_vlan.h>
 #endif /* FRAME_TIMESTAMP_ENABLE */
 #include <linux/bitfield.h>
 #include <linux/iopoll.h>
@@ -731,6 +733,63 @@ static void oa_tc6_cleanup_ongoing_rx_skb(struct oa_tc6 *tc6)
 	}
 }
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+/* Timestamp format structure (8 bytes: 4 bytes seconds + 4 bytes nanoseconds) */
+struct timestamp_format {
+	u32 seconds;
+	u32 nanoseconds;
+};
+
+/* Filter RX timestamp based on hwtstamp_config */
+static bool filter_rx_timestamp(struct oa_tc6 *tc6, u8 *data)
+{
+	struct net_device *netdev = tc6->netdev;
+	struct lan865x_priv *priv = netdev_priv(netdev);
+	int rx_filter = priv->tstamp_config.rx_filter;
+	struct ethhdr *eth;
+	u8 *payload = data;
+	u16 eth_type;
+	struct vlan_hdr *vlan;
+	struct ptp_header *ptp;
+	u8 msg_type;
+
+	if (rx_filter == HWTSTAMP_FILTER_NONE) {
+		return false;
+	} else if (rx_filter == HWTSTAMP_FILTER_ALL) {
+		return true;
+	}
+
+	eth = (struct ethhdr *)payload;
+	payload += sizeof(*eth);
+	eth_type = ntohs(eth->h_proto);
+	if (eth_type == ETH_P_8021Q || eth_type == ETH_P_8021AD) {
+		vlan = (struct vlan_hdr *)payload;
+		eth_type = ntohs(vlan->h_vlan_encapsulated_proto);
+		payload += sizeof(*vlan);
+	}
+
+	if (eth_type != ETH_P_1588) {
+		return false;
+	}
+
+	ptp = (struct ptp_header *)payload;
+	msg_type = ptp->tsmt & 0xF;
+	switch (rx_filter) {
+	case HWTSTAMP_FILTER_PTP_V2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
+		return true;
+	case HWTSTAMP_FILTER_PTP_V2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
+		return msg_type == PTP_MSGTYPE_SYNC;
+	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
+		return msg_type == PTP_MSGTYPE_DELAY_REQ;
+	default:
+		return false;
+	}
+}
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
 static void oa_tc6_cleanup_ongoing_tx_skb(struct oa_tc6 *tc6)
 {
 	if (tc6->ongoing_tx_skb) {
@@ -858,7 +917,24 @@ static int oa_tc6_prcs_complete_rx_frame(struct oa_tc6 *tc6, u8 *payload,
 	if (ret)
 		return ret;
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+	if (filter_rx_timestamp(tc6, &payload[sizeof(struct timestamp_format)])) {
+		struct timestamp_format *net_timestamp =
+			(struct timestamp_format *)payload;
+		struct timestamp_format timestamp;
+
+		timestamp.seconds = ntohl(net_timestamp->seconds);
+		timestamp.nanoseconds = ntohl(net_timestamp->nanoseconds);
+
+		skb_hwtstamps(tc6->rx_skb)->hwtstamp =
+			(u64)timestamp.seconds * NS_IN_1S + timestamp.nanoseconds;
+	}
+
+	oa_tc6_update_rx_skb(tc6, &payload[sizeof(struct timestamp_format)],
+			     size - sizeof(struct timestamp_format));
+#else /* FRAME_TIMESTAMP_ENABLE */
 	oa_tc6_update_rx_skb(tc6, payload, size);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 	oa_tc6_submit_rx_skb(tc6);
 
@@ -873,14 +949,36 @@ static int oa_tc6_prcs_rx_frame_start(struct oa_tc6 *tc6, u8 *payload, u16 size)
 	if (ret)
 		return ret;
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+	if (filter_rx_timestamp(tc6, &payload[sizeof(struct timestamp_format)])) {
+		struct timestamp_format *net_timestamp =
+			(struct timestamp_format *)payload;
+		struct timestamp_format timestamp;
+
+		timestamp.seconds = ntohl(net_timestamp->seconds);
+		timestamp.nanoseconds = ntohl(net_timestamp->nanoseconds);
+
+		skb_hwtstamps(tc6->rx_skb)->hwtstamp =
+			(u64)timestamp.seconds * NS_IN_1S + timestamp.nanoseconds;
+	}
+
+	oa_tc6_update_rx_skb(tc6, &payload[sizeof(struct timestamp_format)],
+			     size - sizeof(struct timestamp_format));
+#else /* FRAME_TIMESTAMP_ENABLE */
 	oa_tc6_update_rx_skb(tc6, payload, size);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 	return 0;
 }
 
 static void oa_tc6_prcs_rx_frame_end(struct oa_tc6 *tc6, u8 *payload, u16 size)
 {
+#ifdef FRAME_TIMESTAMP_ENABLE
+	/* NOTE: Remove unnecessary last 4 bytes. */
+	oa_tc6_update_rx_skb(tc6, payload, size - 4);
+#else /* FRAME_TIMESTAMP_ENABLE */
 	oa_tc6_update_rx_skb(tc6, payload, size);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 	oa_tc6_submit_rx_skb(tc6);
 }
