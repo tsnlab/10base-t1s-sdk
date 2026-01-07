@@ -7,8 +7,6 @@ enum {
     RET_FAIL,
 };
 
-#define FRAME_TIMESTAMP_ENABLE 1
-
 #ifdef FRAME_TIMESTAMP_ENABLE
 
 enum {

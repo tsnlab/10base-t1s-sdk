@@ -11,8 +11,6 @@
 #define LAN865X_DEBUG(...)
 #endif // __LAN865X_DEBUG__
 
-#define FRAME_TIMESTAMP_ENABLE
-
 #include <linux/oa_tc6.h>
 
 #define LAN865X_BUFFER_SIZE (1560)

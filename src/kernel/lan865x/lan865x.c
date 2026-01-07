@@ -398,7 +398,7 @@ static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
             skb_shinfo(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL])->tx_flags |= SKBTX_IN_PROGRESS;
         }
     }
-
+    
     return oa_tc6_start_xmit(priv->tc6, skb, ts_capture_mode);
 }
 
