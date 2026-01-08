@@ -2,10 +2,9 @@
 
 #include "lan865x_ptp.h"
 
+#include <linux/delay.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
-
-#include <linux/delay.h>
 
 #define NSEC_PER_MHZ 1000
 #define MHZ_TO_NS(mhz) (NSEC_PER_MHZ / (mhz))
@@ -131,7 +130,7 @@ static int lan865x_ptp_adjtime(struct ptp_clock_info* ptp_info, s64 delta_ns) {
 
     bool is_negative = false;
     timestamp_t hw_timestamp = 0;
-    timestamp_t curr_hw_timestamp = 0 ;
+    timestamp_t curr_hw_timestamp = 0;
 
     LAN865X_DEBUG("lan865x: call %s\n", __func__);
 

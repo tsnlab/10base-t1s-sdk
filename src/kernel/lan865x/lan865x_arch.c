@@ -153,4 +153,3 @@ u64 lan865x_get_tx_drop_packets(struct lan865x_priv* priv) {
 
     return priv->total_tx_drop_count;
 }
-

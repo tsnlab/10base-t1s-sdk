@@ -101,4 +101,3 @@ u64 lan865x_get_tx_drop_packets(struct lan865x_priv* priv);
 void lan865x_update_tx_packets(struct lan865x_priv* priv);
 
 #endif /* LAN865X_ARCH_H */
-
