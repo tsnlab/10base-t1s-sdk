@@ -59,8 +59,6 @@
 #define LAN865X_RESET_GPIO    22
 #define LAN865X_IRQ_GPIO      23
 
-// lan865x_priv structure is now defined in lan865x_arch.h
-
 static struct oa_tc6* g_tc6;
 
 #define FXL6408_I2C_BUS   20
