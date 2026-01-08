@@ -10,6 +10,7 @@
 #include "lan865x/lan865x_arch.h"
 #include <linux/ptp_classify.h>
 #include <linux/if_vlan.h>
+#include <linux/time64.h>
 #endif /* FRAME_TIMESTAMP_ENABLE */
 #include <linux/bitfield.h>
 #include <linux/iopoll.h>
@@ -734,12 +735,6 @@ static void oa_tc6_cleanup_ongoing_rx_skb(struct oa_tc6 *tc6)
 }
 
 #ifdef FRAME_TIMESTAMP_ENABLE
-/* Timestamp format structure (8 bytes: 4 bytes seconds + 4 bytes nanoseconds) */
-struct timestamp_format {
-	u32 seconds;
-	u32 nanoseconds;
-};
-
 /* Filter RX timestamp based on hwtstamp_config */
 static bool filter_rx_timestamp(struct oa_tc6 *tc6, u8 *data)
 {
@@ -918,20 +913,18 @@ static int oa_tc6_prcs_complete_rx_frame(struct oa_tc6 *tc6, u8 *payload,
 		return ret;
 
 #ifdef FRAME_TIMESTAMP_ENABLE
-	if (filter_rx_timestamp(tc6, &payload[sizeof(struct timestamp_format)])) {
-		struct timestamp_format *net_timestamp =
-			(struct timestamp_format *)payload;
-		struct timestamp_format timestamp;
+	if (filter_rx_timestamp(tc6, &payload[sizeof(struct timespec64)])) {
+		struct timespec64 timestamp;
+		__be32 *net_timestamp = (__be32 *)payload;
 
-		timestamp.seconds = ntohl(net_timestamp->seconds);
-		timestamp.nanoseconds = ntohl(net_timestamp->nanoseconds);
+		timestamp.tv_sec = (s64)ntohl(net_timestamp[0]);
+		timestamp.tv_nsec = (long)ntohl(net_timestamp[1]);
 
-		skb_hwtstamps(tc6->rx_skb)->hwtstamp =
-			(u64)timestamp.seconds * NS_IN_1S + timestamp.nanoseconds;
+		skb_hwtstamps(tc6->rx_skb)->hwtstamp = timespec64_to_ns(&timestamp);
 	}
 
-	oa_tc6_update_rx_skb(tc6, &payload[sizeof(struct timestamp_format)],
-			     size - sizeof(struct timestamp_format));
+	oa_tc6_update_rx_skb(tc6, &payload[sizeof(struct timespec64)],
+			     size - sizeof(struct timespec64));
 #else /* FRAME_TIMESTAMP_ENABLE */
 	oa_tc6_update_rx_skb(tc6, payload, size);
 #endif /* FRAME_TIMESTAMP_ENABLE */
@@ -950,20 +943,18 @@ static int oa_tc6_prcs_rx_frame_start(struct oa_tc6 *tc6, u8 *payload, u16 size)
 		return ret;
 
 #ifdef FRAME_TIMESTAMP_ENABLE
-	if (filter_rx_timestamp(tc6, &payload[sizeof(struct timestamp_format)])) {
-		struct timestamp_format *net_timestamp =
-			(struct timestamp_format *)payload;
-		struct timestamp_format timestamp;
+	if (filter_rx_timestamp(tc6, &payload[sizeof(struct timespec64)])) {
+		struct timespec64 timestamp;
+		__be32 *net_timestamp = (__be32 *)payload;
 
-		timestamp.seconds = ntohl(net_timestamp->seconds);
-		timestamp.nanoseconds = ntohl(net_timestamp->nanoseconds);
+		timestamp.tv_sec = (s64)ntohl(net_timestamp[0]);
+		timestamp.tv_nsec = (long)ntohl(net_timestamp[1]);
 
-		skb_hwtstamps(tc6->rx_skb)->hwtstamp =
-			(u64)timestamp.seconds * NS_IN_1S + timestamp.nanoseconds;
+		skb_hwtstamps(tc6->rx_skb)->hwtstamp = timespec64_to_ns(&timestamp);
 	}
 
-	oa_tc6_update_rx_skb(tc6, &payload[sizeof(struct timestamp_format)],
-			     size - sizeof(struct timestamp_format));
+	oa_tc6_update_rx_skb(tc6, &payload[sizeof(struct timespec64)],
+			     size - sizeof(struct timespec64));
 #else /* FRAME_TIMESTAMP_ENABLE */
 	oa_tc6_update_rx_skb(tc6, payload, size);
 #endif /* FRAME_TIMESTAMP_ENABLE */
