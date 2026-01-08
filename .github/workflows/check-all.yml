@@ -13,13 +13,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      - name: Check all
-        uses: tsnlab/check@main
+      - name: Run clang-format only
+        uses: cpp-linter/cpp-linter-action@v2
         with:
-          python_version: '3.12'
-          rust_version: 'stable'
           github_token: ${{ secrets.GITHUB_TOKEN }}
           clang_tidy: false
           clang_format: true
+
