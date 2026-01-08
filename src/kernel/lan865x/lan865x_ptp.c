@@ -1,3 +1,5 @@
+#ifdef FRAME_TIMESTAMP_ENABLE
+
 #include "lan865x_ptp.h"
 
 #include <linux/if_ether.h>
@@ -282,3 +284,4 @@ void ptp_device_destroy(struct ptp_device* ptp) {
     kfree(ptp);
 }
 
+#endif /* FRAME_TIMESTAMP_ENABLE */

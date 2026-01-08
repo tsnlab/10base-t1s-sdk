@@ -24,8 +24,10 @@
 
 #include "lan865x_ioctl.h"
 #include "lan865x_arch.h"
+#ifdef FRAME_TIMESTAMP_ENABLE
 #include "lan865x_ptp.h"
 #include <linux/net_tstamp.h>
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 #define DRV_NAME "lan8650"
 
@@ -154,6 +156,7 @@ static int lan865x_set_hw_macaddr(struct lan865x_priv *priv, const u8 *mac)
     return ret;
 }
 
+#ifdef FRAME_TIMESTAMP_ENABLE
 static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool_ts_info* ts_info) {
     struct lan865x_priv* priv = (struct lan865x_priv*)netdev_priv(netdev);
 
@@ -174,11 +177,18 @@ static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool
 
     return 0;
 }
+#else /* FRAME_TIMESTAMP_ENABLE */
+static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool_ts_info* ts_info) {
+    return -EOPNOTSUPP;
+}
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 static const struct ethtool_ops lan865x_ethtool_ops = {
     .get_link_ksettings = phy_ethtool_get_link_ksettings,
     .set_link_ksettings = phy_ethtool_set_link_ksettings,
+#ifdef FRAME_TIMESTAMP_ENABLE
     .get_ts_info = lan865x_ethtool_get_ts_info,
+#endif /* FRAME_TIMESTAMP_ENABLE */
 };
 
 
@@ -348,6 +358,7 @@ static void lan865x_set_multicast_list(struct net_device *netdev)
 }
 
 /* ---------- Netdevice ---------- */
+#ifdef FRAME_TIMESTAMP_ENABLE
 static int lan865x_get_ts_config(struct net_device* netdev, struct ifreq* ifr) {
     struct lan865x_priv* priv = (struct lan865x_priv*)netdev_priv(netdev);
     struct hwtstamp_config* hwts_config = &priv->tstamp_config;
@@ -361,11 +372,13 @@ static int lan865x_set_ts_config(struct net_device* netdev, struct ifreq* ifr) {
 
     return copy_from_user(hwts_config, ifr->ifr_data, sizeof(*hwts_config)) ? -EFAULT : 0;
 }
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
                                        struct net_device *netdev)
 {
     struct lan865x_priv* priv = netdev_priv(netdev);
+#ifdef FRAME_TIMESTAMP_ENABLE
     struct hwtstamp_config hwts_config = priv->tstamp_config;
 
     struct sk_buff* cloned_skb;
@@ -400,6 +413,9 @@ static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
     }
     
     return oa_tc6_start_xmit(priv->tc6, skb, ts_capture_mode);
+#else /* FRAME_TIMESTAMP_ENABLE */
+    return oa_tc6_start_xmit(priv->tc6, skb);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 }
 
 static int lan865x_hw_disable(struct lan865x_priv* priv) {
@@ -467,6 +483,7 @@ static int lan865x_net_open(struct net_device *netdev)
 }
 
 static int lan865x_netdev_ioctl(struct net_device* netdev, struct ifreq* ifr, int cmd) {
+#ifdef FRAME_TIMESTAMP_ENABLE
     switch (cmd) {
     case SIOCGHWTSTAMP:
         return lan865x_get_ts_config(netdev, ifr);
@@ -475,6 +492,9 @@ static int lan865x_netdev_ioctl(struct net_device* netdev, struct ifreq* ifr, in
     default:
         return -EOPNOTSUPP;
     }
+#else /* FRAME_TIMESTAMP_ENABLE */
+    return -EOPNOTSUPP;
+#endif /* FRAME_TIMESTAMP_ENABLE */
 }
 
 static const struct net_device_ops lan865x_netdev_ops = {
@@ -619,6 +639,7 @@ static int lan865x_probe(struct spi_device *spi)
         return ret;
     }
 
+#ifdef FRAME_TIMESTAMP_ENABLE
     priv->ptpdev = ptp_device_init(&spi->dev, priv->tc6, (s32)spi->max_speed_hz);
     if (!priv->ptpdev) {
         dev_err(&spi->dev, "ptp_device_init() failed\n");
@@ -628,6 +649,9 @@ static int lan865x_probe(struct spi_device *spi)
         free_netdev(netdev);
         return -ENODEV;
     }
+#else /* FRAME_TIMESTAMP_ENABLE */
+    priv->ptpdev = NULL;
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
     return 0;
@@ -658,11 +682,13 @@ static void lan865x_remove(struct spi_device *spi)
 
     dev_info(&spi->dev, "lan865x: MAC after unregister %pM\n", netdev->dev_addr);
 
+#ifdef FRAME_TIMESTAMP_ENABLE
     if (priv->ptpdev) {
         dev_info(&spi->dev, "lan865x: destroying PTP device\n");
         ptp_device_destroy(priv->ptpdev);
         priv->ptpdev = NULL;
     }
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
     if (priv->tc6) {
         dev_info(&spi->dev, "lan865x: calling oa_tc6_exit\n");
