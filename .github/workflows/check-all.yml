@@ -13,12 +13,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v2
 
-      - name: Run clang-format only
-        uses: cpp-linter/cpp-linter-action@v2
+      - name: Check all
+        uses: tsnlab/check@main
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          clang_tidy: false
-          clang_format: true
-
