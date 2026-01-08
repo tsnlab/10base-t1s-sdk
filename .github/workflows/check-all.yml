@@ -15,30 +15,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
 
-      - name: Install build dependencies
+      - name: Install kernel headers
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential git bc bison flex libssl-dev \
-            libncurses5-dev libncursesw5-dev dwarves device-tree-compiler \
-            gcc-aarch64-linux-gnu
-
-      - name: Setup Raspberry Pi 4 kernel headers
-        run: |
-          KERNEL_DIR="$HOME/rpi4-linux"
-          git clone -b rpi-6.6.y --depth=1 https://github.com/raspberrypi/linux "$KERNEL_DIR"
-          cd "$KERNEL_DIR"
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- bcm2711_defconfig
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- prepare scripts
-          echo "RPI4_KERNEL_DIR=$KERNEL_DIR" >> $GITHUB_ENV
-
-      - name: Setup Raspberry Pi 5 kernel headers
-        run: |
-          KERNEL_DIR="$HOME/rpi5-linux"
-          git clone -b rpi-6.6.y --depth=1 https://github.com/raspberrypi/linux "$KERNEL_DIR"
-          cd "$KERNEL_DIR"
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- bcm2712_defconfig
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- prepare scripts
-          echo "RPI5_KERNEL_DIR=$KERNEL_DIR" >> $GITHUB_ENV
+          sudo apt update
+          sudo apt install -y linux-headers-$(uname -r) linux-headers-$(uname -r)-arm64
 
       - name: Check all
         uses: tsnlab/check@main
