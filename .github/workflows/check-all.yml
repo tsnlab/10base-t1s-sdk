@@ -18,7 +18,7 @@ jobs:
       - name: Install kernel headers
         run: |
           sudo apt update
-          sudo apt install -y linux-headers-$(uname -r) linux-headers-$(uname -r)-arm64
+          sudo apt install -y linux-headers-$(uname -r)
 
       - name: Check all
         uses: tsnlab/check@main
