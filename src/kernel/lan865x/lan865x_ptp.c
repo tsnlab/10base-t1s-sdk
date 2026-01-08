@@ -24,7 +24,7 @@ static int lan865x_ptp_thread_handler(void* data) {
     timestamp_t tx_ts;
     struct skb_shared_hwtstamps skb_hwts;
 
-    while (true) {
+    while (!kthread_should_stop()) {
         // NOTE: ptp_thread_handler operates at 10µs intervals, which may affect PTP accuracy.
         udelay(PTP_THREAD_INTERVAL_MICROSECOND);
 
