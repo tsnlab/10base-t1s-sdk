@@ -15,14 +15,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
 
-      - name: Install kernel headers
-        run: |
-          sudo apt update
-          sudo apt install -y linux-headers-$(uname -r)
-
       - name: Check all
         uses: tsnlab/check@main
         with:
           python_version: '3.12'
           rust_version: 'stable'
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          clang_tidy: false
+          clang_format: true
