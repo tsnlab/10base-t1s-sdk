@@ -7,6 +7,9 @@
 *.obj
 *.elf
 
+# Device tree blob overlay
+*.dtbo
+
 # Linker output
 *.ilk
 *.map
