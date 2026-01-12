@@ -1,0 +1,23 @@
+name: 'C/CPP'
+description: 'Lint C/CPP files'
+
+runs:
+  using: composite
+  steps:
+    - name: Run clang-format, clang-tidy
+      id: cpp-linter
+      uses: cpp-linter/cpp-linter-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        style: 'file'
+        version: '19'
+        tidy-checks: ''
+        thread-comments: ${{ github.event_name == 'pull_request' && 'update' }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        ignore-tidy: '**'
+        ignore-format: ''
+    - name: Fail if clang-format, clang-tidy found issues
+      if: steps.cpp-linter.outputs.checks-failed > 0
+      run: exit 1
+      shell: bash
