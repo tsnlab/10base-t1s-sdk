@@ -6,7 +6,7 @@
  * Modified: sbcho + ChatGPT integration
  */
 
-#include <linux/device.h> // NOLINT
+#include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/miscdevice.h>
