@@ -6,17 +6,21 @@ sysclock_t lan865x_get_sys_clock(struct lan865x_priv* priv) {
     struct oa_tc6* tc6 = priv->tc6;
 
     u32 sec_h;
-    u32 sec, nsec;
+    u32 sec_l;
+    u32 nsec;
     u64 tmp_sec, clock;
 
     if (oa_tc6_read_register(tc6, MMS1_MAC_TN, &nsec))
         return -ENODEV;
-    if (oa_tc6_read_register(tc6, MMS1_MAC_TSL, &sec))
+    if (oa_tc6_read_register(tc6, MMS1_MAC_TSL, &sec_l))
         return -ENODEV;
     if (oa_tc6_read_register(tc6, MMS1_MAC_TSH, &sec_h))
         return -ENODEV;
 
-    tmp_sec = (u64)sec * NS_IN_1S;
+    /* NOTE: Linux timespec64 is 64-bit, but we only use 32-bit seconds and nanoseconds */
+    (void)sec_h;
+
+    tmp_sec = sec_l * NS_IN_1S;
     nsec = nsec & 0x3FFFFFFF;
 
     clock = tmp_sec + nsec;
