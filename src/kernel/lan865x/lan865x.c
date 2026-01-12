@@ -25,6 +25,7 @@
 #include "lan865x_ioctl.h"
 #include "lan865x_sysfs.h"
 #include "lan865x_interrupt.h"
+#include "t1s_hat_fxl6408.h"
 #include <linux/oa_tc6.h>
 
 #define DRV_NAME "lan8650"
@@ -496,6 +497,7 @@ static int lan865x_probe(struct spi_device *spi)
     spi->bits_per_word = 8;
     spi->max_speed_hz = 25000000;
 
+    pr_info("lan865x: start probing\n");
     ret = spi_setup(spi);
     if (ret) {
         dev_err(&spi->dev, "spi_setup failed: %d\n", ret);
@@ -559,14 +561,14 @@ static int lan865x_probe(struct spi_device *spi)
         dev_warn(&spi->dev, "Failed to create sysfs device: %d\n", ret);
         /* Continue even if sysfs creation fails */
     }
-    /* Allocate IRQ */
-    /*
     ret = lan865x_interrupt_init(spi);
     if (ret) {
-        return ret;
+        dev_warn(&spi->dev, "Failed to allocate IRQ: %d\n", ret);
     }
-    */
-
+    t1s_hat_fxl6408_init();
+    if (ret) {
+        dev_warn(&spi->dev, "Failed to initialize FXL6048: %d\n", ret);
+    }
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
     return 0;
 }
@@ -592,6 +594,7 @@ static void lan865x_remove(struct spi_device *spi)
     /* Remove sysfs device */
     lan865x_sysfs_remove_device(priv);
     lan865x_interrupt_exit();
+    t1s_hat_fxl6408_exit();
 
     dev_info(&spi->dev, "lan865x: unregistering netdev %s\n", netdev_name(netdev));
     dev_info(&spi->dev, "lan865x: MAC before unregister %pM\n", netdev->dev_addr);

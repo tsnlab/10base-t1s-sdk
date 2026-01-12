@@ -6,10 +6,17 @@
 #define I2C_BUS_ADDRESS   1
 #define FXL6408_I2C_ADDR  0x43
 #define FXL6408_I2C_BUS   20
+#define FXL6408_MF        0x5
+
+struct fxl6408_device_id_ctrl {
+    u8  MF: 3;      // Manufacturer
+    u8  FW_rev: 3;  // Firmware version
+    u8  RST_INT: 1;
+    u8  SW_RST: 1;
+};
 
 static struct i2c_client  *fxl6408_client;
 
-/*
 u8 t1s_hat_fxl6408_read_reg(u8 reg)
 {
     u8  buf;
@@ -24,76 +31,25 @@ void t1s_hat_fxl6408_write_reg(u8 reg, u8 val)
     i2c_master_send(fxl6408_client, &reg, 1);
     i2c_master_send(fxl6408_client, &val, 1);
 }
-*/
-
-void t1s_hat_fxl6408_write_reg(u8 reg, u8 val)
+void init_registers(void)
 {
-    struct i2c_adapter *adap;
-    struct i2c_msg msgs[2];
-    u8 val = 0;
-    int ret;
+    struct fxl6408_device_id_ctrl   ctrl;
+    u8 ret;
 
-    adap = i2c_get_adapter(1);
-    if (!adap) {
-        dev_err(dev, "DIPSW: failed to get i2c adapter 1\n");
-        return -ENODEV;
-    }
-
-    /* write reg address (0x0F) */
-    msgs[0].addr  = FXL6408_I2C_ADDR;
-    msgs[0].flags = 0;
-    msgs[0].len   = 1;
-    msgs[0].buf   = &reg;
-
-    /* read data */
-    msgs[1].addr  = FXL6408_I2C_ADDR;
-    msgs[1].flags = I2C_M_RD;
-    msgs[1].len   = 1;
-    msgs[1].buf   = &val;
-
-    ret = i2c_transfer(adap, msgs, sizeof(msgs)/sizeof(struct i2c_msg));
-    i2c_put_adapter(adap);
-
-    if (ret < 0) {
-        pr_err("lan865x: FXL6408 i2c_transfer failed (ret=%d)\n", ret);
-        return ret;
-    }
-
-    return val;
-}
-
-void t1s_hat_fxl6408_write_reg(u8 reg, u8 val)
-{
-    struct i2c_adapter *adap;
-    struct i2c_msg msgs[2];
-    u8 val = 0;
-    int ret;
-
-    adap = i2c_get_adapter(1);
-    if (!adap) {
-        dev_err(dev, "DIPSW: failed to get i2c adapter 1\n");
+    ret = t1s_hat_fxl6408_read_reg(FXL6408_REG_DEVICE_ID_CTRL);
+    *(u8 *)&ctrl = ret;
+    if (ctrl.MF != FXL6408_MF) {
+        pr_warn("t1s_hat_fxl6408: Manufacturer=0x%02x\n", ctrl.MF);
         return;
     }
-
-    /* write reg address (0x0F) */
-    msgs[0].addr  = FXL6408_I2C_ADDR;
-    msgs[0].flags = 0;
-    msgs[0].len   = 1;
-    msgs[0].buf   = &reg;
-
-    /* read data */
-    msgs[1].addr  = FXL6408_I2C_ADDR;
-    msgs[1].flags = 0;
-    msgs[1].len   = 1;
-    msgs[1].buf   = &val;
-
-    ret = i2c_transfer(adap, msgs, sizeof(msgs)/sizeof(struct i2c_msg));
-    i2c_put_adapter(adap);
-
-    if (ret < 0) {
-        pr_err("lan865x: FXL6408 i2c_transfer failed (ret=%d)\n", ret);
-        return;
-    }
+    ctrl.SW_RST = 1;
+    t1s_hat_fxl6408_write_reg(FXL6408_REG_DEVICE_ID_CTRL,
+        ret | *(u8 *)&ctrl);
+    t1s_hat_fxl6408_write_reg(FXL6408_REG_OUTPUT_HIGH_Z, 0x00);
+    t1s_hat_fxl6408_write_reg(FXL6408_REG_IO_DIRECTION, 0x0F);
+    t1s_hat_fxl6408_write_reg(FXL6408_REG_INPUT_DEFAULT, 0xF0);
+    t1s_hat_fxl6408_write_reg(FXL6408_REG_INTERRUPT_MASK, 0x00);
+    ret = t1s_hat_fxl6408_read_reg(FXL6408_REG_DEVICE_ID_CTRL);
 }
 
 static struct i2c_board_info  fxl6408_info = {
@@ -103,7 +59,6 @@ static struct i2c_board_info  fxl6408_info = {
 int t1s_hat_fxl6408_init(void)
 {
     struct i2c_adapter *adapter;
-    int   ret;
 
     adapter = i2c_get_adapter(I2C_BUS_ADDRESS);
     if (adapter == NULL) {
@@ -111,6 +66,7 @@ int t1s_hat_fxl6408_init(void)
         return -1;
     }
     fxl6408_client = i2c_new_client_device(adapter, &fxl6408_info);
+    init_registers();
     i2c_put_adapter(adapter);
     if (fxl6408_client == NULL) {
         pr_warn("t1s_hat_fxl6408: failed to create i2c device\n");

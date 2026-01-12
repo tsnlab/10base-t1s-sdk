@@ -9,11 +9,17 @@
 #include <linux/interrupt.h>
 
 #include "lan865x_interrupt.h"
+#include "t1s_hat_fxl6408.h"
 
 static irqreturn_t irq_handler(int irq, void* dev)
 {
-  pr_info("lan865x: irq_handler called\n");
-  return IRQ_HANDLED;
+    u8 val;
+
+    val = t1s_hat_fxl6408_read_reg(FXL6408_REG_INTERRUPT_STATUS);
+    fsleep(20);
+    val = t1s_hat_fxl6408_read_reg(FXL6408_REG_INPUT_STATUS);
+    pr_info("lan865x: fxl6408 input status = 0x%02x\n\n", val);
+    return IRQ_HANDLED;
 }
 
 int lan865x_interrupt_init(struct spi_device *spi_device)
@@ -23,6 +29,7 @@ int lan865x_interrupt_init(struct spi_device *spi_device)
     int irq;
     int ret;
 
+    /* nodeid-gpios */
     gpiod = devm_gpiod_get(device, "nodeid", GPIOD_IN);
     if (IS_ERR(gpiod)) {
       return PTR_ERR(gpiod);

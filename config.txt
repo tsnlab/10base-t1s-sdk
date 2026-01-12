@@ -49,4 +49,4 @@ otg_mode=1
 dtoverlay=dwc2,dr_mode=host
 
 [all]
-dtoverlays=lan8650
+dtoverlay=lan8650

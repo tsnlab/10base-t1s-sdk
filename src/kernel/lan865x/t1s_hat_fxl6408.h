@@ -15,6 +15,6 @@
 int t1s_hat_fxl6408_init(void);
 void t1s_hat_fxl6408_exit(void);
 u8 t1s_hat_fxl6408_read_reg(u8 reg);
-void t1s_hat_fxl6408_write_reg(u8 reg, u8 *buf);
+void t1s_hat_fxl6408_write_reg(u8 reg, u8 buf);
 
 #endif

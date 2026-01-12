@@ -19,7 +19,6 @@
                 interrupts = <23 2>, <24 8>;
                 nodeid-gpios = <&gpio 24 1>;  /* GPIO_ACTIVE_LOW */
                 reset-gpios = <&gpio 22 0>;   /* GPIO_ACTIVE_HIGH */
-                bias-pull-up;
                 #status = "okay";
                 #spi-cpol;
                 #spi-cpha;
