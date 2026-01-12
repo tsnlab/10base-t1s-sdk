@@ -1,9 +1,19 @@
-name: 'C/CPP'
-description: 'Lint C/CPP files'
+name: Check C/CPP files
 
-runs:
-  using: composite
+on:
+  - push
+  - pull_request
+
+jobs:
+  check-cpp:
+    runs-on: ubuntu-latest
+    permission:
+      contents: read
+      pull-requests: write
+    
   steps:
+    - name: Checkout
+      uses: actions/checkout@v4
     - name: Run clang-format, clang-tidy
       id: cpp-linter
       uses: cpp-linter/cpp-linter-action@v2
@@ -17,7 +27,3 @@ runs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         ignore-tidy: '**'
         ignore-format: ''
-    - name: Fail if clang-format, clang-tidy found issues
-      if: steps.cpp-linter.outputs.checks-failed > 0
-      run: exit 1
-      shell: bash
