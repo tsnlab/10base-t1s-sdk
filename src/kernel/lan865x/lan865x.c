@@ -713,9 +713,8 @@ static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg
         }
 
         ret = oa_tc6_read_register(g_tc6, reg.addr, &reg.value);
-
         if (ret < 0) {
-            return ret;
+            return -ENODEV;
         }
 
         if (copy_to_user((void __user*)arg, &reg, sizeof(reg))) {

@@ -31,7 +31,8 @@ static int lan865x_ptp_thread_handler(void* data) {
         // NOTE: ptp_thread_handler operates at 10µs intervals, which may affect PTP accuracy.
         udelay(PTP_THREAD_INTERVAL_MICROSECOND);
 
-        oa_tc6_read_register(ptpdev->tc6, MMS0_OA_STATUS0, &status);
+        if (oa_tc6_read_register(ptpdev->tc6, MMS0_OA_STATUS0, &status))
+            return -ENODEV;
 
         // GPTP
         if (status & TS_A_MASK) {

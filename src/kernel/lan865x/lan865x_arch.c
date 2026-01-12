@@ -129,8 +129,10 @@ timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id) {
     if (tx_id < 0 || tx_id >= ARRAY_SIZE(reg_hi) || !reg_hi[tx_id] || !reg_lo[tx_id])
         return -EINVAL;
 
-    oa_tc6_read_register(tc6, reg_hi[tx_id], &ts_h);
-    oa_tc6_read_register(tc6, reg_lo[tx_id], &ts_l);
+    if (oa_tc6_read_register(tc6, reg_hi[tx_id], &ts_h))
+        return -ENODEV;
+    if (oa_tc6_read_register(tc6, reg_lo[tx_id], &ts_l))
+        return -ENODEV;
 
     tmp_sec = (u64)ts_h * NS_IN_1S;
     ts_l = ts_l & 0xFFFFFFFF;
@@ -144,8 +146,10 @@ void lan865x_update_tx_packets(struct lan865x_priv* priv) {
     u32 tx_count = 0, total_tx_count = 0;
 
     /* This register gets cleared after read */
-    oa_tc6_read_register(tc6, MMS0_STATS12, &tx_count);
-    oa_tc6_read_register(tc6, MMS0_STATS11, &total_tx_count);
+    if (oa_tc6_read_register(tc6, MMS0_STATS12, &tx_count))
+        return -ENODEV;
+    if (oa_tc6_read_register(tc6, MMS0_STATS11, &total_tx_count))
+        return -ENODEV;
 
     priv->total_tx_count += tx_count;
     if ((total_tx_count - tx_count) > 0) {
