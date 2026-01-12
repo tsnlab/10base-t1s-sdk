@@ -221,7 +221,6 @@ struct ptp_device* ptp_device_init(struct device* dev, struct oa_tc6* tc6, s32 m
         dev_err(dev, "kzalloc()");
         return NULL;
     }
-    memset(ptpdev, 0, sizeof(struct ptp_device));
 
     struct ptp_clock_info ptp_info = {
         .owner = THIS_MODULE,
