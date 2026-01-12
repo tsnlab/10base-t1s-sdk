@@ -11,17 +11,17 @@ jobs:
       contents: read
       pull-requests: write
     
-  steps:
-    - name: Checkout
-      uses: actions/checkout@v2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
 
-    - name: Run clang-format
-      uses: cpp-linter/cpp-linter-action@v2
-      with:
-        style: 'file'
-        version: '19'
-        tidy-checks: ''
-        thread-comments: ${{ github.event_name == 'pull_request' && 'update' }}
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        ignore-tidy: '**'
-        ignore-format: ''
+      - name: Run clang-format
+        uses: cpp-linter/cpp-linter-action@v2
+        with:
+          style: 'file'
+          version: '19'
+          tidy-checks: ''
+          thread-comments: ${{ github.event_name == 'pull_request' && 'update' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          ignore-tidy: '**'
+          ignore-format: '**'
