@@ -1,7 +1,6 @@
 name: Check C/CPP files
 
 on:
-  - push
   - pull_request
 
 jobs:
@@ -24,4 +23,4 @@ jobs:
           thread-comments: ${{ github.event_name == 'pull_request' && 'update' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           ignore-tidy: '**'
-          ignore-format: '**'
+          ignore-format: ''
