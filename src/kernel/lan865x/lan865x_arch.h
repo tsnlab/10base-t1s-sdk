@@ -2,7 +2,7 @@
 #define LAN865X_ARCH_H
 
 #include <linux/net_tstamp.h>
-#include <linux/ptp_clock_kernel.h>
+#include <linux/ptp_clock_kernel.h> // NOLINT
 #include <linux/types.h>
 
 #ifdef __LAN865X_DEBUG__

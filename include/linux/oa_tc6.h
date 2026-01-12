@@ -10,7 +10,7 @@
 #ifndef OA_TC6_H
 #define OA_TC6_H
 
-#include <linux/etherdevice.h>
+#include <linux/etherdevice.h> // NOLINT
 #include <linux/spi/spi.h>
 
 struct oa_tc6;
