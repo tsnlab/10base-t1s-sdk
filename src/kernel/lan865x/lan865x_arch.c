@@ -16,10 +16,10 @@ sysclock_t lan865x_get_sys_clock(struct lan865x_priv* priv) {
         return -ENODEV;
     if (oa_tc6_read_register(tc6, MMS1_MAC_TSH, &sec_h))
         return -ENODEV;
-
+    
     /* NOTE: Linux timespec64 is 64-bit, but we only use 32-bit seconds and nanoseconds */
     (void)sec_h;
-
+        
     tmp_sec = sec_l * NS_IN_1S;
     nsec = nsec & 0x3FFFFFFF;
 
@@ -62,7 +62,7 @@ int lan865x_set_sys_clock_ti(struct lan865x_priv* priv, u64 subnano_b24) {
 
     // 24bit 00123456 -> 56001234
     u32 subnano = subnano_b24 & 0x00FFFFFF;
-    reg_tisubn_val = ((subnano & 0xffff00) >> 8) | ((subnano & 0x0000FF) << 24);
+    reg_tisubn_val = ((subnano & 0xFFFF00) >> 8) | ((subnano & 0x0000FF) << 24);
 
     // Set MAC_TI(TSU Timer Increment) register
     if (oa_tc6_write_register(tc6, MMS1_MAC_TISUBN, reg_tisubn_val))
