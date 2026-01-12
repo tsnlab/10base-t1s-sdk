@@ -39,7 +39,7 @@ int lan865x_set_sys_clock(struct lan865x_priv* priv, u64 timestamp) {
     // Reverse order for lower the error
     if (oa_tc6_write_register(tc6, MMS1_MAC_TN, nsec))
         return -ENODEV;
-    if (oa_tc6_write_register(tc6, MMS1_MAC_TSL, sec))
+    if (oa_tc6_write_register(tc6, MMS1_MAC_TSL, sec_l))
         return -ENODEV;
     if (oa_tc6_write_register(tc6, MMS1_MAC_TSH, sec_h))
         return -ENODEV;
