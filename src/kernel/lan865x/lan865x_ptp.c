@@ -19,6 +19,8 @@ struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_inf
 }
 
 static int lan865x_ptp_thread_handler(void* data) {
+    unsigned long flags;
+
     struct ptp_device* ptpdev = (struct ptp_device*)data;
     struct lan865x_priv* priv = dev_get_drvdata(ptpdev->dev);
     u32 status;
