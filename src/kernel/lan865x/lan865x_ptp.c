@@ -58,7 +58,8 @@ static int lan865x_ptp_thread_handler(void* data) {
         }
 
         if (status & (TS_A_MASK | TS_B_MASK | TS_C_MASK)) {
-            oa_tc6_write_register(ptpdev->tc6, MMS0_OA_STATUS0, status);
+            if (oa_tc6_write_register(ptpdev->tc6, MMS0_OA_STATUS0, status))
+                return -ENODEV;
         }
         status = 0;
     }
