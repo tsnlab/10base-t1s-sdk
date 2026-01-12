@@ -7,7 +7,7 @@ on:
 jobs:
   check-cpp:
     runs-on: ubuntu-latest
-    permission:
+    permissions:
       contents: read
       pull-requests: write
     
