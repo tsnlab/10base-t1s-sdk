@@ -38,8 +38,10 @@ static int lan865x_ptp_thread_handler(void* data) {
 
             skb_hwts.hwtstamp = ns_to_ktime(tx_ts);
             LAN865X_DEBUG("%s: tx_ts = %llu, skb_hwts.hwtstamp = %llu\n", __func__, tx_ts, skb_hwts.hwtstamp);
+            spin_lock_irqsave(&ptpdev->lock, flags);
             skb_tstamp_tx(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP], &skb_hwts);
             kfree_skb(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP]);
+            spin_unlock_irqrestore(&ptpdev->lock, flags);
         }
         // NORMAL
         if (status & TS_B_MASK) {
@@ -48,8 +50,10 @@ static int lan865x_ptp_thread_handler(void* data) {
 
             skb_hwts.hwtstamp = ns_to_ktime(tx_ts);
             LAN865X_DEBUG("%s: tx_ts = %llu, skb_hwts.hwtstamp = %llu\n", __func__, tx_ts, skb_hwts.hwtstamp);
+            spin_lock_irqsave(&ptpdev->lock, flags);
             skb_tstamp_tx(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL], &skb_hwts);
             kfree_skb(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL]);
+            spin_unlock_irqrestore(&ptpdev->lock, flags);
         }
         // RESERVED
         if (status & TS_C_MASK) {
@@ -138,7 +142,7 @@ static int lan865x_ptp_adjtime(struct ptp_clock_info* ptp_info, s64 delta_ns) {
     spin_lock_irqsave(&ptpdev->lock, flags);
 
     if (delta_ns == 0) {
-        return 0;
+        goto exit;
     }
 
     hw_timestamp = lan865x_get_sys_clock(priv);
@@ -156,6 +160,7 @@ static int lan865x_ptp_adjtime(struct ptp_clock_info* ptp_info, s64 delta_ns) {
     LAN865X_DEBUG("%s: delta_ns = %c%llu, curr_hw_timestamp = %llu\n", __func__, is_negative ? '-' : '+', delta_ns,
                   curr_hw_timestamp);
 
+exit:
     spin_unlock_irqrestore(&ptpdev->lock, flags);
 
     return 0;
