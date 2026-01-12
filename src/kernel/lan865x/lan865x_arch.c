@@ -45,7 +45,7 @@ int lan865x_set_sys_clock(struct lan865x_priv* priv, u64 timestamp) {
     return 0;
 }
 
-void lan865x_set_sys_clock_ti(struct lan865x_priv* priv, u64 subnano_b24) {
+int lan865x_set_sys_clock_ti(struct lan865x_priv* priv, u64 subnano_b24) {
     struct oa_tc6* tc6 = priv->tc6;
     u32 reg_ti_val;
     u32 reg_tisubn_val;
@@ -65,9 +65,11 @@ void lan865x_set_sys_clock_ti(struct lan865x_priv* priv, u64 subnano_b24) {
         return -ENODEV;
     if (oa_tc6_write_register(tc6, MMS1_MAC_TI, reg_ti_val))
         return -ENODEV;
+
+    return 0;
 }
 
-void lan865x_add_sys_clock(struct lan865x_priv* priv, u32 add_offset) {
+int lan865x_add_sys_clock(struct lan865x_priv* priv, u32 add_offset) {
     struct oa_tc6* tc6 = priv->tc6;
     u32 reg_val = 0;
 
@@ -82,9 +84,11 @@ void lan865x_add_sys_clock(struct lan865x_priv* priv, u32 add_offset) {
     /* Set MAC_TA(TSU Timer Adjust) register */
     if (oa_tc6_write_register(tc6, MMS1_MAC_TA, reg_val))
         return -ENODEV;
+
+    return 0;
 }
 
-void lan865x_sub_sys_clock(struct lan865x_priv* priv, u32 sub_offset) {
+int lan865x_sub_sys_clock(struct lan865x_priv* priv, u32 sub_offset) {
     struct oa_tc6* tc6 = priv->tc6;
     u32 reg_val = 0;
 
@@ -97,6 +101,8 @@ void lan865x_sub_sys_clock(struct lan865x_priv* priv, u32 sub_offset) {
     /* Set MAC_TA(TSU Timer Adjust) register */
     if (oa_tc6_write_register(tc6, MMS1_MAC_TA, reg_val))
         return -ENODEV;
+
+    return 0;
 }
 
 timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id) {

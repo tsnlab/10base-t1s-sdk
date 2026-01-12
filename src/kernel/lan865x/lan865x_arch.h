@@ -92,9 +92,9 @@ struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_inf
 sysclock_t lan865x_get_sys_clock(struct lan865x_priv* priv);
 int lan865x_set_sys_clock(struct lan865x_priv* priv, u64 timestamp);
 u32 lan865x_get_cycle_1s(void);
-void lan865x_set_sys_clock_ti(struct lan865x_priv* priv, u64 subnano_b24);
-void lan865x_add_sys_clock(struct lan865x_priv* priv, u32 add_offset);
-void lan865x_sub_sys_clock(struct lan865x_priv* priv, u32 sub_offset);
+int lan865x_set_sys_clock_ti(struct lan865x_priv* priv, u64 subnano_b24);
+int lan865x_add_sys_clock(struct lan865x_priv* priv, u32 add_offset);
+int lan865x_sub_sys_clock(struct lan865x_priv* priv, u32 sub_offset);
 timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id);
 u64 lan865x_get_tx_packets(struct lan865x_priv* priv);
 u64 lan865x_get_tx_drop_packets(struct lan865x_priv* priv);
