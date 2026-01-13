@@ -23,7 +23,11 @@
 #include <linux/err.h>
 
 #include "lan865x_ioctl.h"
-#include <linux/oa_tc6.h>
+#include "lan865x_arch.h"
+#ifdef FRAME_TIMESTAMP_ENABLE
+#include "lan865x_ptp.h"
+#include <linux/net_tstamp.h>
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 #define DRV_NAME "lan8650"
 
@@ -54,13 +58,6 @@
 /* GPIO fallback (if not DT-provided) */
 #define LAN865X_RESET_GPIO    22
 #define LAN865X_IRQ_GPIO      23
-
-struct lan865x_priv {
-    struct work_struct multicast_work;
-    struct net_device *netdev;
-    struct spi_device *spi;
-    struct oa_tc6 *tc6;
-};
 
 static struct oa_tc6* g_tc6;
 
@@ -157,9 +154,39 @@ static int lan865x_set_hw_macaddr(struct lan865x_priv *priv, const u8 *mac)
     return ret;
 }
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool_ts_info* ts_info) {
+    struct lan865x_priv* priv = (struct lan865x_priv*)netdev_priv(netdev);
+
+    if (!priv->ptpdev) {
+        return -EOPNOTSUPP;
+    }
+
+    ts_info->phc_index = ptp_clock_index(priv->ptpdev->ptp_clock);
+
+    ts_info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_RX_SOFTWARE | SOF_TIMESTAMPING_SOFTWARE |
+                               SOF_TIMESTAMPING_TX_HARDWARE | SOF_TIMESTAMPING_RX_HARDWARE |
+                               SOF_TIMESTAMPING_RAW_HARDWARE;
+
+    ts_info->tx_types = BIT(HWTSTAMP_TX_OFF) | BIT(HWTSTAMP_TX_ON);
+
+    ts_info->rx_filters = BIT(HWTSTAMP_FILTER_NONE) | BIT(HWTSTAMP_FILTER_ALL) | BIT(HWTSTAMP_FILTER_PTP_V2_L2_EVENT) |
+                          BIT(HWTSTAMP_FILTER_PTP_V2_L2_SYNC) | BIT(HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ);
+
+    return 0;
+}
+#else /* FRAME_TIMESTAMP_ENABLE */
+static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool_ts_info* ts_info) {
+    return -EOPNOTSUPP;
+}
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
 static const struct ethtool_ops lan865x_ethtool_ops = {
     .get_link_ksettings = phy_ethtool_get_link_ksettings,
     .set_link_ksettings = phy_ethtool_set_link_ksettings,
+#ifdef FRAME_TIMESTAMP_ENABLE
+    .get_ts_info = lan865x_ethtool_get_ts_info,
+#endif /* FRAME_TIMESTAMP_ENABLE */
 };
 
 
@@ -329,12 +356,64 @@ static void lan865x_set_multicast_list(struct net_device *netdev)
 }
 
 /* ---------- Netdevice ---------- */
+#ifdef FRAME_TIMESTAMP_ENABLE
+static int lan865x_get_ts_config(struct net_device* netdev, struct ifreq* ifr) {
+    struct lan865x_priv* priv = (struct lan865x_priv*)netdev_priv(netdev);
+    struct hwtstamp_config* hwts_config = &priv->tstamp_config;
+
+    return copy_to_user(ifr->ifr_data, hwts_config, sizeof(*hwts_config)) ? -EFAULT : 0;
+}
+
+static int lan865x_set_ts_config(struct net_device* netdev, struct ifreq* ifr) {
+    struct lan865x_priv* priv = (struct lan865x_priv*)netdev_priv(netdev);
+    struct hwtstamp_config* hwts_config = &priv->tstamp_config;
+
+    return copy_from_user(hwts_config, ifr->ifr_data, sizeof(*hwts_config)) ? -EFAULT : 0;
+}
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
 static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
                                        struct net_device *netdev)
 {
     struct lan865x_priv* priv = netdev_priv(netdev);
+#ifdef FRAME_TIMESTAMP_ENABLE
+    struct hwtstamp_config hwts_config = priv->tstamp_config;
 
+    struct sk_buff* cloned_skb;
+    u8 ts_capture_mode = LAN865X_TIMESTAMP_ID_NONE;
+
+    if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
+
+        cloned_skb = skb_clone(skb, GFP_ATOMIC);
+        if (!cloned_skb) {
+            netdev_err(netdev, "%s: skb_clone() failed\n", __func__);
+            return -EAGAIN;
+        }
+
+        /* NOTE:
+         *	skb_clone() does not copy the user-space socket (sk) information.
+         *	However, TX timestamping requires a valid sk to queue the timestamp to the user socket.
+         *	Therefore, we manually copy the sk pointer from the original skb. */
+        cloned_skb->sk = skb->sk;
+
+        if (hwts_config.tx_type != HWTSTAMP_TX_ON) {
+            ts_capture_mode = LAN865X_TIMESTAMP_ID_NONE;
+            kfree_skb(cloned_skb);
+        } else if (is_gptp_packet(skb)) {
+            ts_capture_mode = LAN865X_TIMESTAMP_ID_GPTP;
+            priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP] = skb_get(cloned_skb);
+            skb_shinfo(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP])->tx_flags |= SKBTX_IN_PROGRESS;
+        } else {
+            ts_capture_mode = LAN865X_TIMESTAMP_ID_NORMAL;
+            priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL] = skb_get(cloned_skb);
+            skb_shinfo(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL])->tx_flags |= SKBTX_IN_PROGRESS;
+        }
+    }
+    
+    return oa_tc6_start_xmit(priv->tc6, skb, ts_capture_mode);
+#else /* FRAME_TIMESTAMP_ENABLE */
     return oa_tc6_start_xmit(priv->tc6, skb);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 }
 
 static int lan865x_hw_disable(struct lan865x_priv* priv) {
@@ -401,12 +480,28 @@ static int lan865x_net_open(struct net_device *netdev)
     return 0;
 }
 
+static int lan865x_netdev_ioctl(struct net_device* netdev, struct ifreq* ifr, int cmd) {
+#ifdef FRAME_TIMESTAMP_ENABLE
+    switch (cmd) {
+    case SIOCGHWTSTAMP:
+        return lan865x_get_ts_config(netdev, ifr);
+    case SIOCSHWTSTAMP:
+        return lan865x_set_ts_config(netdev, ifr);
+    default:
+        return -EOPNOTSUPP;
+    }
+#else /* FRAME_TIMESTAMP_ENABLE */
+    return -EOPNOTSUPP;
+#endif /* FRAME_TIMESTAMP_ENABLE */
+}
+
 static const struct net_device_ops lan865x_netdev_ops = {
     .ndo_open = lan865x_net_open,
     .ndo_stop = lan865x_net_close,
     .ndo_start_xmit = lan865x_send_packet,
     .ndo_set_rx_mode = lan865x_set_multicast_list,
     .ndo_set_mac_address = lan865x_set_mac_address,
+    .ndo_eth_ioctl = lan865x_netdev_ioctl,
 };
 
 static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg);
@@ -542,6 +637,20 @@ static int lan865x_probe(struct spi_device *spi)
         return ret;
     }
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+    priv->ptpdev = ptp_device_init(&spi->dev, priv->tc6, (s32)spi->max_speed_hz);
+    if (!priv->ptpdev) {
+        dev_err(&spi->dev, "ptp_device_init() failed\n");
+        unregister_netdev(netdev);
+        g_tc6 = NULL;
+        oa_tc6_exit(priv->tc6);
+        free_netdev(netdev);
+        return -ENODEV;
+    }
+#else /* FRAME_TIMESTAMP_ENABLE */
+    priv->ptpdev = NULL;
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
     return 0;
 }
@@ -571,6 +680,14 @@ static void lan865x_remove(struct spi_device *spi)
 
     dev_info(&spi->dev, "lan865x: MAC after unregister %pM\n", netdev->dev_addr);
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+    if (priv->ptpdev) {
+        dev_info(&spi->dev, "lan865x: destroying PTP device\n");
+        ptp_device_destroy(priv->ptpdev);
+        priv->ptpdev = NULL;
+    }
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
     if (priv->tc6) {
         dev_info(&spi->dev, "lan865x: calling oa_tc6_exit\n");
         g_tc6 = NULL;
@@ -596,9 +713,8 @@ static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg
         }
 
         ret = oa_tc6_read_register(g_tc6, reg.addr, &reg.value);
-
         if (ret < 0) {
-            return ret;
+            return -ENODEV;
         }
 
         if (copy_to_user((void __user*)arg, &reg, sizeof(reg))) {

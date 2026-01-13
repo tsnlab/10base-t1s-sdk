@@ -1,0 +1,28 @@
+name: Check C/CPP files
+
+on:
+  - pull_request
+
+jobs:
+  check-cpp:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Run clang-format
+        id: cpp-linter
+        uses: cpp-linter/cpp-linter-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          style: 'file'
+          version: '19'
+          tidy-checks: ''
+          thread-comments: ${{ github.event_name == 'pull_request' && 'update' }}
+          ignore-tidy: '**'
+          ignore-format: ''
