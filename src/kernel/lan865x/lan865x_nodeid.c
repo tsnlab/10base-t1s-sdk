@@ -109,7 +109,7 @@ static int init_interrupt(struct device *dev)
     }
     irq = gpiod_to_irq(gpiod);
     if (irq < 0) {
-      pr_err("lan865x: failed to get IRQ number\n");
+      pr_warn("lan865x: failed to get IRQ number\n");
       return irq;
     }
     ret = devm_request_threaded_irq(dev, irq, NULL, irq_handler,
@@ -117,7 +117,7 @@ static int init_interrupt(struct device *dev)
                              "lan865x_irq",
                              dev);
     if (ret < 0) {
-      pr_err("lan865x: failed to allocate IRQ\n");
+      pr_warn("lan865x: failed to allocate IRQ\n");
       return ret;
     }
     pr_info("lan865x: irq=%d\n", irq);
@@ -131,6 +131,7 @@ static struct i2c_board_info  fxl6408_info = {
 int lan865x_nodeid_init(struct device *dev)
 {
     struct i2c_adapter *adapter;
+    int ret;
 
     adapter = i2c_get_adapter(I2C_BUS_ADDRESS);
     if (adapter == NULL) {
@@ -145,8 +146,8 @@ int lan865x_nodeid_init(struct device *dev)
     }
     pr_info("lan865x_nodeid: fxl6408 initialized\n");
     init_registers();
-    init_interrupt(dev);
-    return 0;
+    ret = init_interrupt(dev);
+    return ret;
 }
 
 void lan865x_nodeid_exit(void)

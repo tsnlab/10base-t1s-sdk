@@ -19,14 +19,8 @@ KERNEL=kernel8
 BOOT_PARTITION=/dev/mmcblk0p1
 ROOT_PARTITION=/dev/mmcblk0p2
 echo "NOTE:  ${BOOT_PARTITION}  ${ROOT_PARTITION}"
-echo "will be mounted and written. Ctrl-C to cancel proceeding."
-for i in 3 2 1;
-do
-  printf "\r                 \r"
-  printf "Starting in $i"
-  sleep 1
-done
-echo ""
+echo "will be mounted and written. Press enter to proceed."
+read
 
 BOOT_MOUNTPOINT=${RPI4_KERNEL_DIR}/mnt/boot
 ROOT_MOUNTPOINT=${RPI4_KERNEL_DIR}/mnt/root

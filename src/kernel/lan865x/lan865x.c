@@ -496,7 +496,6 @@ static int lan865x_probe(struct spi_device *spi)
     spi->bits_per_word = 8;
     spi->max_speed_hz = 25000000;
 
-    pr_info("lan865x: start probing\n");
     ret = spi_setup(spi);
     if (ret) {
         dev_err(&spi->dev, "spi_setup failed: %d\n", ret);
@@ -562,10 +561,7 @@ static int lan865x_probe(struct spi_device *spi)
     }
     lan865x_nodeid_init(&spi->dev);
     if (ret) {
-        dev_warn(&spi->dev, "Failed to initialize FXL6048: %d\n", ret);
-    }
-    if (ret) {
-        dev_warn(&spi->dev, "Failed to allocate IRQ: %d\n", ret);
+        dev_warn(&spi->dev, "Failed to initialize node ID updater: %d\n", ret);
     }
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
     return 0;
