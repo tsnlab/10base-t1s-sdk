@@ -4,6 +4,7 @@
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/semaphore.h>
+#include <linux/atomic/atomic-instrumented.h>
 
 #include "t1s_hat_fxl6408.h"
 
@@ -15,9 +16,9 @@
 
 static struct i2c_client  *fxl6408_client;
 static struct task_struct *nodeid_thread;
+static DEFINE_SEMAPHORE(nodeid_irq_sem, 0);
 
-static DEFINE_SEMAPHORE(nodeid_irq_sem);
-static DEFINE_SPINLOCK(nodeid_irq_lock);
+static atomic_t nodeid_irq_flag = ATOMIC_INIT(0);
 
 u8 t1s_hat_fxl6408_read_reg(u8 reg)
 {
@@ -37,10 +38,10 @@ u8 t1s_hat_fxl6408_read_reg(u8 reg)
 
     ret = i2c_transfer(fxl6408_client->adapter, msgs, sizeof(msgs) / sizeof(struct i2c_msg));
     if (ret < 0) {
-        dev_err(dev, "t1s_hat_fxl6408: i2c_transfer failed (ret=%d)\n", ret);
+        pr_err("t1s_hat_fxl6408: i2c_transfer failed (ret=%d)\n", ret);
         return ret;
     }
-    return buf;
+    return val;
 }
 
 void t1s_hat_fxl6408_write_reg(u8 reg, u8 val)
@@ -58,32 +59,43 @@ void t1s_hat_fxl6408_write_reg(u8 reg, u8 val)
     msgs[1].len   = FXL6408_REG_SIZE;
     msgs[1].buf   = &val;
 
-    ret = i2c_transfer(fxl6408_client->adapter, msgs, sizeof(msgs) / sizeof(struct i2c_msg));
+    ret = i2c_transfer(fxl6408_client->adapter, msgs, sizeof(msgs)
+        / sizeof(struct i2c_msg));
     if (ret < 0) {
-        dev_err(dev, "t1s_hat_fxl6408: i2c_transfer failed (ret=%d)\n", ret);
+        pr_err("t1s_hat_fxl6408: i2c_transfer failed (ret=%d)\n", ret);
     }
 }
 
-static int first_irq_flag = 0;
-
+/*
+ * Acquire node ID from FXL6408 input pin(4:7)
+ *
+ * Node ID selector can change signals of 4 pins
+ * that are connected to the FXL6408.
+ * Change on each pin can cause interrupt. Total 4 interrupts.
+ * So there exists delay between first interrupt and last interrupt.
+ * That's why msleep is used here.
+ */
 static int get_nodeid(void* data)
 {
+    int ret;
     u8  val;
 
-    while (!kthread_should_stop()) {
-        down(nodeid_irq_sem);
+    while (1) {
+        ret = down_interruptible(&nodeid_irq_sem);
+        if (ret != 0) {
+            pr_warn("t1s_hat_fxl6408: error while acquiring semaphore\n");
+        }
+        if (kthread_should_stop()) {
+            break;
+        }
         msleep(20);
-
         val = t1s_hat_fxl6408_read_reg(FXL6408_REG_INPUT_STATUS);
-        // Set current Node ID as input default
-        t1s_hat_fxl6408_write_reg(FXL6408_REG_INPUT_DEFAULT, val & 0xF0);
-        pr_info("\nt1s_hat_fxl6408: input status      = 0x%02x\n\n", val);
-        val = t1s_hat_fxl6408_read_reg(FXL6408_REG_INTERRUPT_STATUS);
-        pr_info("t1s_hat_fxl6408: interrupt status  = 0x%02x\n", val);
-
-        spin_lock(&nodeid_irq_lock);
-        first_irq_flag = 0;
-        spin_unlock(&nodeid_irq_lock);
+        t1s_hat_fxl6408_write_reg(FXL6408_REG_INPUT_DEFAULT, val);
+        pr_info("t1s_hat_fxl6408: input status      = 0x%02x\n", val);
+        val = t1s_hat_fxl6408_read_reg(FXL6408_REG_INPUT_DEFAULT);
+        pr_info("t1s_hat_fxl6408: input default     = 0x%02x\n", val);
+        pr_info("\n");
+        atomic_set(&nodeid_irq_flag, 0);
     }
     return 0;
 }
@@ -92,12 +104,11 @@ static irqreturn_t nodeid_threaded_irq(int irq, void* dev)
 {
     u8  val;
 
-    spin_lock(&nodeid_irq_lock);
-    if (first_irq_flag == 0) {
-        first_irq_flag = 1;
-        up(nodeid_irq_sem);
+    if (atomic_cmpxchg(&nodeid_irq_flag, 0, 1) == 0) {
+        up(&nodeid_irq_sem);
     }
-    spin_unlock(&nodeid_irq_lock);
+    val = t1s_hat_fxl6408_read_reg(FXL6408_REG_INTERRUPT_STATUS);
+    pr_info("t1s_hat_fxl6408: interrupt status  = 0x%02x\n", val);
     return IRQ_HANDLED;
 }
 
@@ -120,7 +131,7 @@ static void init_registers(void)
     t1s_hat_fxl6408_write_reg(FXL6408_REG_DEVICE_ID_CTRL, *(u8 *)&ctrl);
     t1s_hat_fxl6408_write_reg(FXL6408_REG_OUTPUT_HIGH_Z, 0x00);
     t1s_hat_fxl6408_write_reg(FXL6408_REG_IO_DIRECTION, 0x0F);
-    t1s_hat_fxl6408_write_reg(FXL6408_REG_INPUT_DEFAULT, 0xF0);
+    t1s_hat_fxl6408_write_reg(FXL6408_REG_INPUT_DEFAULT, 0x00);
     t1s_hat_fxl6408_write_reg(FXL6408_REG_INTERRUPT_MASK, 0x00);
     ret = t1s_hat_fxl6408_read_reg(FXL6408_REG_DEVICE_ID_CTRL);
 }
@@ -141,7 +152,7 @@ static int init_interrupt(struct device *dev)
       pr_warn("t1s_hat_fxl6408: failed to get IRQ number\n");
       return irq;
     }
-    ret = devm_request_threaded_irq(dev, irq, nodeid_threaded_irq, NULL,
+    ret = devm_request_threaded_irq(dev, irq, NULL, nodeid_threaded_irq,
                              IRQF_TRIGGER_LOW | IRQF_ONESHOT,
                              "t1s_hat_fxl6408_irq",
                              dev);
@@ -183,7 +194,7 @@ int t1s_hat_fxl6408_init(struct device *dev)
 
 void t1s_hat_fxl6408_exit(void)
 {
-  i2c_unregister_device(fxl6408_client);
-  kthread_stop(nodeid_thread);
-  down(nodeid_thread_sem);
+    i2c_unregister_device(fxl6408_client);
+    kthread_stop(nodeid_thread);
+    up(&nodeid_irq_sem);
 }
