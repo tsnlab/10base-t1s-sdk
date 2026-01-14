@@ -61,6 +61,7 @@ driver() {
   fi
   sudo cp lan8650.dtbo ${BOOT_MOUNTPOINT}/overlays/
   sudo cp lan865x.ko ${ROOT_MOUNTPOINT}/opt/
+  sudo cp config.txt ${BOOT_MOUNTPOINT}/overlays/
 }
 
 sudo mount ${BOOT_PARTITION} ${BOOT_MOUNTPOINT}
@@ -72,8 +73,9 @@ fi
 
 set -e
 
-#kernel
+# kernel
 driver
 
 sudo umount ${BOOT_MOUNTPOINT} ${ROOT_MOUNTPOINT}
+sync
 echo "safe to remove sd card"
