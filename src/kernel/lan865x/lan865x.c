@@ -24,7 +24,7 @@
 
 #include "lan865x_ioctl.h"
 #include "lan865x_sysfs.h"
-#include "lan865x_nodeid.h"
+#include "t1s_hat_fxl6408.h"
 #include <linux/oa_tc6.h>
 
 #define DRV_NAME "lan8650"
@@ -559,7 +559,7 @@ static int lan865x_probe(struct spi_device *spi)
         dev_warn(&spi->dev, "Failed to create sysfs device: %d\n", ret);
         /* Continue even if sysfs creation fails */
     }
-    lan865x_nodeid_init(&spi->dev);
+    t1s_hat_fxl6408_init(&spi->dev);
     if (ret) {
         dev_warn(&spi->dev, "Failed to initialize node ID updater: %d\n", ret);
     }
@@ -587,7 +587,7 @@ static void lan865x_remove(struct spi_device *spi)
 
     /* Remove sysfs device */
     lan865x_sysfs_remove_device(priv);
-    lan865x_nodeid_exit();
+    t1s_hat_fxl6408_exit();
 
     dev_info(&spi->dev, "lan865x: unregistering netdev %s\n", netdev_name(netdev));
     dev_info(&spi->dev, "lan865x: MAC before unregister %pM\n", netdev->dev_addr);
