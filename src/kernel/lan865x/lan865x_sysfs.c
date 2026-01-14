@@ -3,25 +3,23 @@
  * LAN865x sysfs interface implementation
  */
 
-#include <linux/device.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/err.h>
-#include <linux/slab.h>
-
 #include "lan865x_sysfs.h"
+
+#include <linux/device.h>
+#include <linux/err.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/slab.h>
 
 #define LAN865X_CLASS_NAME "lan865x"
 
-static struct class *lan865x_class;
+static struct class* lan865x_class;
 static dev_t lan865x_devt;
 static int lan865x_minor = 0;
 
 /* sysfs show function for node_id */
-static ssize_t node_id_show(struct device *dev, struct device_attribute *attr,
-                            char *buf)
-{
-    struct lan865x_priv *priv = dev_get_drvdata(dev);
+static ssize_t node_id_show(struct device* dev, struct device_attribute* attr, char* buf) {
+    struct lan865x_priv* priv = dev_get_drvdata(dev);
     int node_id;
 
     if (!priv) {
@@ -40,7 +38,7 @@ static ssize_t node_id_show(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR_RO(node_id);
 
 /* Define attribute group */
-static struct attribute *lan865x_attrs[] = {
+static struct attribute* lan865x_attrs[] = {
     &dev_attr_node_id.attr,
 
     /* Reserved for future attributes */
@@ -52,8 +50,7 @@ static const struct attribute_group lan865x_attr_group = {
 };
 
 /* Initialize sysfs class */
-int lan865x_sysfs_init(void)
-{
+int lan865x_sysfs_init(void) {
     int ret;
 
     /* Allocate character device region */
@@ -74,8 +71,7 @@ int lan865x_sysfs_init(void)
 }
 
 /* Cleanup sysfs class */
-void lan865x_sysfs_exit(void)
-{
+void lan865x_sysfs_exit(void) {
     if (lan865x_class) {
         class_destroy(lan865x_class);
         lan865x_class = NULL;
@@ -85,9 +81,8 @@ void lan865x_sysfs_exit(void)
 }
 
 /* Create sysfs device for a lan865x instance */
-int lan865x_sysfs_create_device(struct lan865x_priv *priv)
-{
-    struct device *dev;
+int lan865x_sysfs_create_device(struct lan865x_priv* priv) {
+    struct device* dev;
     dev_t devt;
     char name[16];
     int ret;
@@ -124,9 +119,8 @@ int lan865x_sysfs_create_device(struct lan865x_priv *priv)
 }
 
 /* Remove sysfs device for a lan865x instance */
-void lan865x_sysfs_remove_device(struct lan865x_priv *priv)
-{
-    struct device *dev;
+void lan865x_sysfs_remove_device(struct lan865x_priv* priv) {
+    struct device* dev;
     int minor;
 
     if (!lan865x_class) {
