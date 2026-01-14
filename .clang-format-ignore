@@ -1,0 +1,4 @@
+# Files to ignore for clang-format
+# These are Linux Kernel source files that should not be reformatted
+src/kernel/oa_tc6.c
+src/kernel/lan865x/lan865x.c
