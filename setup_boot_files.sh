@@ -20,29 +20,29 @@ BOOT_PARTITION=/dev/mmcblk0p1
 ROOT_PARTITION=/dev/mmcblk0p2
 echo "NOTE:  ${BOOT_PARTITION}  ${ROOT_PARTITION}"
 echo "will be mounted and written. Press enter to proceed."
-read
+read -r
 
 BOOT_MOUNTPOINT=${RPI4_KERNEL_DIR}/mnt/boot
 ROOT_MOUNTPOINT=${RPI4_KERNEL_DIR}/mnt/root
 
-if [ ! -d ${BOOT_MOUNTPOINT} ]; then
-  mkdir -p ${BOOT_MOUNTPOINT} ${ROOT_MOUNTPOINT}
+if [ ! -d "${BOOT_MOUNTPOINT}" ]; then
+  mkdir -p "${BOOT_MOUNTPOINT}" "${ROOT_MOUNTPOINT}"
 fi
 
 kernel() {
-  pushd ${RPI4_KERNEL_DIR}
+  pushd "${RPI4_KERNEL_DIR}"
 
   echo "writing kernel modules"
-  sudo env PATH=$PATH make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- INSTALL_MOD_PATH=${ROOT_MOUNTPOINT} modules_install
+  sudo env PATH="${PATH}" make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- INSTALL_MOD_PATH="${ROOT_MOUNTPOINT}" modules_install
 
   echo "writing kernel image"
-  sudo cp ${BOOT_MOUNTPOINT}/$KERNEL.img ${BOOT_MOUNTPOINT}/$KERNEL-backup.img
-  sudo cp arch/arm64/boot/Image ${BOOT_MOUNTPOINT}/$KERNEL.img
+  sudo cp "${BOOT_MOUNTPOINT}"/"${KERNEL}".img "${BOOT_MOUNTPOINT}"/"${KERNEL}"-backup.img
+  sudo cp arch/arm64/boot/Image "${BOOT_MOUNTPOINT}"/"${KERNEL}".img
 
   echo "writing device tree files"
-  sudo cp arch/arm64/boot/dts/broadcom/*.dtb ${BOOT_MOUNTPOINT}
-  sudo cp arch/arm64/boot/dts/overlays/*.dtb* ${BOOT_MOUNTPOINT}/overlays/
-  sudo cp arch/arm64/boot/dts/overlays/README ${BOOT_MOUNTPOINT}/overlays/
+  sudo cp arch/arm64/boot/dts/broadcom/*.dtb "${BOOT_MOUNTPOINT}"
+  sudo cp arch/arm64/boot/dts/overlays/*.dtb* "${BOOT_MOUNTPOINT}"/overlays/
+  sudo cp arch/arm64/boot/dts/overlays/README "${BOOT_MOUNTPOINT}"/overlays/
 
   popd
 }
@@ -50,23 +50,25 @@ kernel() {
 driver() {
   dtc -@ -I dts -O dtb -o lan8650.dtbo lan8650-overlay.dts
   make BOARD=rpi4
-  if [[ $(grep "dtoverlay=lan8650" ${BOOT_MOUNTPOINT}/config.txt) == "" ]]; then
-    sudo sed -i 's/\[all\]/\0\ndtoverlay=lan8650/' ${BOOT_MOUNTPOINT}/config.txt
+  if [[ $(grep "dtoverlay=lan8650" "${BOOT_MOUNTPOINT}"/config.txt) == "" ]]; then
+    sudo sed -i 's/\[all\]/\0\ndtoverlay=lan8650/' "${BOOT_MOUNTPOINT}"/config.txt
   fi
-  sudo sed -i 's/#dtparam=i2c_arm=on/dtparam=i2c_arm=on/' ${BOOT_MOUNTPOINT}/config.txt
-  sudo sed -i 's/#dtparam=spi=on/dtparam=spi=on/' ${BOOT_MOUNTPOINT}/config.txt
-  if [[ $(grep "i2c" ${ROOT_MOUNTPOINT}/etc/modules) == "" ]]; then
-    sudo echo "i2c-bcm2835" | sudo tee -a ${ROOT_MOUNTPOINT}/etc/modules
-    sudo echo "i2c-brcmstb" | sudo tee -a ${ROOT_MOUNTPOINT}/etc/modules
+  sudo sed -i 's/#dtparam=i2c_arm=on/dtparam=i2c_arm=on/' "${BOOT_MOUNTPOINT}"/config.txt
+  sudo sed -i 's/#dtparam=spi=on/dtparam=spi=on/' "${BOOT_MOUNTPOINT}"/config.txt
+  if [[ $(grep "i2c" "${ROOT_MOUNTPOINT}"/etc/modules) == "" ]]; then
+    sudo echo "i2c-bcm2835" | sudo tee -a "${ROOT_MOUNTPOINT}"/etc/modules
+    sudo echo "i2c-brcmstb" | sudo tee -a "${ROOT_MOUNTPOINT}"/etc/modules
   fi
-  sudo cp lan8650.dtbo ${BOOT_MOUNTPOINT}/overlays/
-  sudo cp lan865x.ko ${ROOT_MOUNTPOINT}/opt/
-  sudo cp config.txt ${BOOT_MOUNTPOINT}/overlays/
+  sudo cp lan8650.dtbo "${BOOT_MOUNTPOINT}"/overlays/
+  sudo cp lan865x.ko "${ROOT_MOUNTPOINT}"/opt/
+  sudo cp config.txt "${BOOT_MOUNTPOINT}"/overlays/
 }
 
-sudo mount ${BOOT_PARTITION} ${BOOT_MOUNTPOINT}
-sudo mount ${ROOT_PARTITION} ${ROOT_MOUNTPOINT}
-if [[ $? -ne 0 ]]; then
+if ! sudo mount "${BOOT_PARTITION}" "${BOOT_MOUNTPOINT}"; then
+  echo "mount error"
+  exit 1
+fi
+if ! sudo mount "${ROOT_PARTITION}" "${ROOT_MOUNTPOINT}"; then
   echo "mount error"
   exit 1
 fi
@@ -76,6 +78,6 @@ set -e
 # kernel
 driver
 
-sudo umount ${BOOT_MOUNTPOINT} ${ROOT_MOUNTPOINT}
+sudo umount "${BOOT_MOUNTPOINT}" "${ROOT_MOUNTPOINT}"
 sync
 echo "safe to remove sd card"
