@@ -100,6 +100,6 @@ int lan865x_sub_sys_clock(struct lan865x_priv* priv, u32 sub_offset);
 timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id);
 u64 lan865x_get_tx_packets(struct lan865x_priv* priv);
 u64 lan865x_get_tx_drop_packets(struct lan865x_priv* priv);
-void lan865x_update_tx_packets(struct lan865x_priv* priv);
+int lan865x_update_tx_packets(struct lan865x_priv* priv);
 
 #endif /* LAN865X_ARCH_H */

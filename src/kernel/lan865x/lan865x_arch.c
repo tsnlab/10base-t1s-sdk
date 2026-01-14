@@ -141,7 +141,7 @@ timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id) {
     return timestamp;
 }
 
-void lan865x_update_tx_packets(struct lan865x_priv* priv) {
+int lan865x_update_tx_packets(struct lan865x_priv* priv) {
     struct oa_tc6* tc6 = priv->tc6;
     u32 tx_count = 0, total_tx_count = 0;
 
@@ -155,6 +155,7 @@ void lan865x_update_tx_packets(struct lan865x_priv* priv) {
     if ((total_tx_count - tx_count) > 0) {
         priv->total_tx_drop_count += (total_tx_count - tx_count);
     }
+    return 0;
 }
 
 u64 lan865x_get_tx_packets(struct lan865x_priv* priv) {
