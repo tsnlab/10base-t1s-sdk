@@ -1,5 +1,5 @@
-#ifndef _LAN865X_NODEIE_H_
-#define _LAN865X_NODEIE_H_
+#ifndef _T1S_HAT_FXL6408_H_
+#define _T1S_HAT_FXL6408_H_
 
 #include <linux/device.h>
 
@@ -14,9 +14,9 @@
 #define FXL6408_REG_INTERRUPT_MASK    0x11
 #define FXL6408_REG_INTERRUPT_STATUS  0x13
 
-int lan865x_nodeid_init(struct device *dev);
-void lan865x_nodeid_exit(void);
-u8 lan865x_nodeid_read_reg(u8 reg);
-void lan865x_nodeid_write_reg(u8 reg, u8 buf);
+int t1s_hat_fxl6408_init(struct device *dev);
+void t1s_hat_fxl6408_exit(void);
+u8 t1s_hat_fxl6408_read_reg(u8 reg);
+void t1s_hat_fxl6408_write_reg(u8 reg, u8 buf);
 
 #endif
