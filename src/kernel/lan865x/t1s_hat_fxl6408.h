@@ -16,7 +16,13 @@ struct lan865x_priv;
 #define FXL6408_REG_INTERRUPT_MASK 0x11
 #define FXL6408_REG_INTERRUPT_STATUS 0x13
 
-#define FXL6408_BUTTON_INPUT_MASK 1 << 3
+#define FXL6408_BUTTON_INPUT_MASK (1 << 3)
+
+#define FXL6408_PLCA_OK_LED_ON (1 << 1)
+#define FXL6408_PLCA_OK_LED_OFF (0 << 1)
+
+#define FXL6408_BUZZER_ON (1 << 0)
+#define FXL6408_BUZZER_OFF (0 << 0)
 
 int t1s_hat_fxl6408_init(struct lan865x_priv* priv, struct device* dev);
 void t1s_hat_fxl6408_exit(struct lan865x_priv* priv);
