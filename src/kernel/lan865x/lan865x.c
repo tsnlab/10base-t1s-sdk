@@ -92,50 +92,8 @@ static int lan865x_plca_check_thread_handler(void* data) {
 
 int lan865x_get_node_id(struct lan865x_priv *priv)
 {
-    pr_info("lan865x: get_node_id=%d\n", priv->node_id);
+    pr_debug("lan865x: get_node_id=%d\n", priv->node_id);
     return priv->node_id;
-}
-
-/* ---------- Helper Functions for Register Access ---------- */
-static int read_nodeid_from_fxl6408(struct device *dev)
-{
-    struct i2c_adapter *adap;
-    struct i2c_msg msgs[2];
-    u8 reg = NODE_ID_OFFSET;
-    u8 val = 0;
-    int ret;
-    int node_id;
-
-    adap = i2c_get_adapter(1);
-    if (!adap) {
-        dev_err(dev, "DIPSW: failed to get i2c adapter 1\n");
-        return -ENODEV;
-    }
-
-    /* write reg address (0x0F) */
-    msgs[0].addr  = FXL6408_I2C_ADDR;
-    msgs[0].flags = 0;
-    msgs[0].len   = NODE_ID_LEN;
-    msgs[0].buf   = &reg;
-
-    /* read data */
-    msgs[1].addr  = FXL6408_I2C_ADDR;
-    msgs[1].flags = I2C_M_RD;
-    msgs[1].len   = NODE_ID_LEN;
-    msgs[1].buf   = &val;
-
-    ret = i2c_transfer(adap, msgs, sizeof(msgs)/sizeof(struct i2c_msg));
-    i2c_put_adapter(adap);
-
-    if (ret < 0) {
-        dev_err(dev, "DIPSW: i2c_transfer failed (ret=%d)\n", ret);
-        return ret;
-    }
-
-    /* NodeID = bits[7:4] */
-    node_id = (val >> 4) & 0x0F;
-    dev_info(dev, "DIPSW: NodeID=%d (from raw=0x%02x)\n", node_id, val);
-    return node_id;
 }
 
 int lan865x_set_nodeid(struct lan865x_priv *priv, u32 node_id)
@@ -578,12 +536,9 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
     }
 #endif
 
-    int node_id = read_nodeid_from_fxl6408(dev);
-    if (node_id < 0)
-    {
-        dev_err(dev, "Failed to get node_id from i2c, Set to default 0x0F\n");
-        node_id = 0x0F;
-    }
+    /* Read input status register */
+    u8 val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
+    u8 node_id = (val & 0xF0) >> 4;
     priv->node_id = node_id;
     lan865x_set_nodeid(priv, node_id);
 
@@ -659,10 +614,7 @@ static int lan865x_probe(struct spi_device *spi)
     ret = oa_tc6_zero_align_receive_frame_enable(priv->tc6);
     if (ret) {
         dev_err(&spi->dev, "Failed to set ZARFE: %d\n", ret);
-        g_tc6 = NULL;
-        oa_tc6_exit(priv->tc6);
-        free_netdev(netdev);
-        return -ENODEV;
+        goto zero_align_receive_frame_enable_error;
     }
 
     u8 mac[ETH_ALEN];
@@ -678,37 +630,35 @@ static int lan865x_probe(struct spi_device *spi)
     ret = register_netdev(netdev);
     if (ret) {
         dev_err(&spi->dev, "register_netdev failed: %d\n", ret);
-        g_tc6 = NULL;
-        oa_tc6_exit(priv->tc6);
-        free_netdev(netdev);
-        return ret;
+        goto register_netdev_error;
     }
 
-    /* Create sysfs device */
-    ret = lan865x_sysfs_create_device(priv);
-    if (ret) {
-        dev_warn(&spi->dev, "Failed to create sysfs device: %d\n", ret);
-        /* Continue even if sysfs creation fails */
-    }
-    ret = t1s_hat_fxl6408_init(priv, &spi->dev);
-    if (ret) {
-        dev_warn(&spi->dev, "Failed to initialize node ID updater: %d\n", ret);
-    }
 #ifdef FRAME_TIMESTAMP_ENABLE
     priv->ptpdev = ptp_device_init(&spi->dev, priv->tc6, (s32)spi->max_speed_hz);
     if (!priv->ptpdev) {
         dev_err(&spi->dev, "ptp_device_init() failed\n");
-        unregister_netdev(netdev);
-        g_tc6 = NULL;
-        oa_tc6_exit(priv->tc6);
-        free_netdev(netdev);
-        return -ENODEV;
+        goto ptp_device_init_error;
     }
 #else /* FRAME_TIMESTAMP_ENABLE */
     priv->ptpdev = NULL;
 #endif /* FRAME_TIMESTAMP_ENABLE */
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
+    
     return 0;
+
+ptp_device_init_error:
+    unregister_netdev(netdev);
+register_netdev_error:
+zero_align_receive_frame_enable_error:
+t1s_hat_fxl6408_init_error:
+    t1s_hat_fxl6408_exit(priv);
+sysfs_create_error:
+    lan865x_sysfs_remove_device(priv);
+oa_tc6_init_error:
+    g_tc6 = NULL;
+    oa_tc6_exit(priv->tc6);
+    free_netdev(netdev);
+    return -ENODEV;
 }
 
 static void lan865x_remove(struct spi_device *spi)
