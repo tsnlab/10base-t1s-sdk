@@ -94,16 +94,19 @@ static int get_nodeid(void* data) {
         if (kthread_should_stop()) {
             break;
         }
-        msleep(20);
-        val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
-        //t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INPUT_DEFAULT, val);
-        //pr_info("t1s_hat_fxl6408: input status      = 0x%02x\n", val);
-        //val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_DEFAULT);
-        pr_debug("t1s_hat_fxl6408: input default = 0x%02x\n", val);
 
-        /* TODO: Convert val to nodeid */
-        priv->node_id = val;
-        lan865x_set_nodeid(priv, val);
+        /* Wait for 20ms to avoid interrupt storm. */
+        msleep(20);
+
+        /* Read input status register */
+        val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
+
+        /* If button is pressed, set node_id to LAN8650 */
+        if (val & FXL6408_BUTTON_INPUT_MASK) {
+            priv->node_id = (val & 0xF0) >> 4;
+            pr_info("t1s_hat_fxl6408: node_id = 0x%02x\n", priv->node_id);
+            lan865x_set_nodeid(priv, priv->node_id);
+        }
 
         atomic_set(&nodeid_irq_flag, 0);
     }
@@ -112,15 +115,17 @@ static int get_nodeid(void* data) {
 
 static irqreturn_t nodeid_threaded_irq(int irq, void* data) {
     struct lan865x_priv* priv = (struct lan865x_priv*)data;
-    u8 val;
 
     if (atomic_cmpxchg(&nodeid_irq_flag, 0, 1) == 0) {
         up(&nodeid_irq_sem);
     }
-    if (priv) {
-        val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INTERRUPT_STATUS);
-        pr_info("t1s_hat_fxl6408: interrupt status  = 0x%02x\n", val);
+    if (!priv) {
+        pr_err("t1s_hat_fxl6408: priv is NULL\n");
+        return IRQ_NONE;
     }
+
+    t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INTERRUPT_STATUS);
+
     return IRQ_HANDLED;
 }
 
@@ -139,10 +144,10 @@ static void init_registers(struct lan865x_priv* priv) {
         pr_warn("t1s_hat_fxl6408: Manufacturer=0x%02x\n", ctrl.MF);
     }
     ctrl.SW_RST = 1;
+    t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INPUT_DEFAULT, 0x00);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_DEVICE_ID_CTRL, *(u8*)&ctrl);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_OUTPUT_HIGH_Z, 0x00);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_IO_DIRECTION, 0x0F);
-    t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INPUT_DEFAULT, 0x00);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INTERRUPT_MASK, 0x00);
     ret = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_DEVICE_ID_CTRL);
 }
