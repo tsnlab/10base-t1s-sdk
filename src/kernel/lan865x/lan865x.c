@@ -116,7 +116,7 @@ static int read_nodeid_from_fxl6408(struct device *dev)
     return node_id;
 }
 
-static int lan865x_set_nodeid(struct lan865x_priv *priv, u32 node_id)
+int lan865x_set_nodeid(struct lan865x_priv *priv, u32 node_id)
 {
     u32 regval = (LAN8650_NODE_MAX_COUNT << NODE_ID_BITS_WIDTH) |
                  (node_id & NODE_ID_MASK);
@@ -652,7 +652,7 @@ static int lan865x_probe(struct spi_device *spi)
         dev_warn(&spi->dev, "Failed to create sysfs device: %d\n", ret);
         /* Continue even if sysfs creation fails */
     }
-    t1s_hat_fxl6408_init(&spi->dev);
+    ret = t1s_hat_fxl6408_init(priv, &spi->dev);
     if (ret) {
         dev_warn(&spi->dev, "Failed to initialize node ID updater: %d\n", ret);
     }
@@ -693,7 +693,7 @@ static void lan865x_remove(struct spi_device *spi)
 
     /* Remove sysfs device */
     lan865x_sysfs_remove_device(priv);
-    t1s_hat_fxl6408_exit();
+    t1s_hat_fxl6408_exit(priv);
 
     dev_info(&spi->dev, "lan865x: unregistering netdev %s\n", netdev_name(netdev));
     dev_info(&spi->dev, "lan865x: MAC before unregister %pM\n", netdev->dev_addr);

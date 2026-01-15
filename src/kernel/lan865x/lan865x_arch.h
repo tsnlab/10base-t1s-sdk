@@ -1,6 +1,7 @@
 #ifndef LAN865X_ARCH_H
 #define LAN865X_ARCH_H
 
+#include <linux/i2c.h>
 #include <linux/net_tstamp.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/types.h>
@@ -86,6 +87,7 @@ struct lan865x_priv {
     uint64_t total_tx_count;
     uint64_t total_tx_drop_count;
 
+    struct i2c_client* fxl6408_client;
     u8 node_id;
 };
 
@@ -101,5 +103,6 @@ timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id);
 u64 lan865x_get_tx_packets(struct lan865x_priv* priv);
 u64 lan865x_get_tx_drop_packets(struct lan865x_priv* priv);
 int lan865x_update_tx_packets(struct lan865x_priv* priv);
+int lan865x_set_nodeid(struct lan865x_priv* priv, u32 node_id);
 
 #endif /* LAN865X_ARCH_H */
