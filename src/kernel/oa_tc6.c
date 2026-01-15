@@ -129,6 +129,11 @@
 #define STATUS0_RESETC_POLL_DELAY 1000
 #define STATUS0_RESETC_POLL_TIMEOUT 1000000
 
+#ifdef FRAME_TIMESTAMP_ENABLE
+#define OA_TC6_TIMESTAMP_SIZE 8
+#define OA_TC6_UNNECESSARY_FOOTER_SIZE 4
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
 /* Internal structure for MAC-PHY drivers */
 struct oa_tc6 {
 	struct device *dev;
@@ -913,7 +918,7 @@ static int oa_tc6_prcs_complete_rx_frame(struct oa_tc6 *tc6, u8 *payload,
 		return ret;
 
 #ifdef FRAME_TIMESTAMP_ENABLE
-	if (filter_rx_timestamp(tc6, &payload[sizeof(struct timespec64)])) {
+	if (filter_rx_timestamp(tc6, &payload[OA_TC6_TIMESTAMP_SIZE])) {
 		struct timespec64 timestamp;
 		__be32 *net_timestamp = (__be32 *)payload;
 
@@ -923,8 +928,7 @@ static int oa_tc6_prcs_complete_rx_frame(struct oa_tc6 *tc6, u8 *payload,
 		skb_hwtstamps(tc6->rx_skb)->hwtstamp = timespec64_to_ns(&timestamp);
 	}
 
-	oa_tc6_update_rx_skb(tc6, &payload[sizeof(struct timespec64)],
-			     size - sizeof(struct timespec64));
+	oa_tc6_update_rx_skb(tc6, &payload[OA_TC6_TIMESTAMP_SIZE], size - OA_TC6_TIMESTAMP_SIZE);
 #else /* FRAME_TIMESTAMP_ENABLE */
 	oa_tc6_update_rx_skb(tc6, payload, size);
 #endif /* FRAME_TIMESTAMP_ENABLE */
@@ -943,7 +947,7 @@ static int oa_tc6_prcs_rx_frame_start(struct oa_tc6 *tc6, u8 *payload, u16 size)
 		return ret;
 
 #ifdef FRAME_TIMESTAMP_ENABLE
-	if (filter_rx_timestamp(tc6, &payload[sizeof(struct timespec64)])) {
+	if (filter_rx_timestamp(tc6, &payload[OA_TC6_TIMESTAMP_SIZE])) {
 		struct timespec64 timestamp;
 		__be32 *net_timestamp = (__be32 *)payload;
 
@@ -953,8 +957,7 @@ static int oa_tc6_prcs_rx_frame_start(struct oa_tc6 *tc6, u8 *payload, u16 size)
 		skb_hwtstamps(tc6->rx_skb)->hwtstamp = timespec64_to_ns(&timestamp);
 	}
 
-	oa_tc6_update_rx_skb(tc6, &payload[sizeof(struct timespec64)],
-			     size - sizeof(struct timespec64));
+	oa_tc6_update_rx_skb(tc6, &payload[OA_TC6_TIMESTAMP_SIZE], size - OA_TC6_TIMESTAMP_SIZE);
 #else /* FRAME_TIMESTAMP_ENABLE */
 	oa_tc6_update_rx_skb(tc6, payload, size);
 #endif /* FRAME_TIMESTAMP_ENABLE */
@@ -966,7 +969,7 @@ static void oa_tc6_prcs_rx_frame_end(struct oa_tc6 *tc6, u8 *payload, u16 size)
 {
 #ifdef FRAME_TIMESTAMP_ENABLE
 	/* NOTE: Remove unnecessary last 4 bytes. */
-	oa_tc6_update_rx_skb(tc6, payload, size - 4);
+	oa_tc6_update_rx_skb(tc6, payload, size - OA_TC6_UNNECESSARY_FOOTER_SIZE);
 #else /* FRAME_TIMESTAMP_ENABLE */
 	oa_tc6_update_rx_skb(tc6, payload, size);
 #endif /* FRAME_TIMESTAMP_ENABLE */
