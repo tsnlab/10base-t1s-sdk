@@ -7,6 +7,7 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/semaphore.h>
 
 #define I2C_BUS_ADDRESS 1
@@ -39,16 +40,21 @@ u8 t1s_hat_fxl6408_read_reg(struct lan865x_priv* priv, u8 reg) {
     msgs[1].len = FXL6408_REG_SIZE;
     msgs[1].buf = &val;
 
+    mutex_lock(&priv->fxl6408_lock);
     ret = i2c_transfer(priv->fxl6408_client->adapter, msgs, sizeof(msgs) / sizeof(struct i2c_msg));
     if (ret < 0) {
         pr_err("t1s_hat_fxl6408: i2c_transfer failed (ret=%d)\n", ret);
+        mutex_unlock(&priv->fxl6408_lock);
         return ret;
     }
+    mutex_unlock(&priv->fxl6408_lock);
+
     return val;
 }
 
 void t1s_hat_fxl6408_write_reg(struct lan865x_priv* priv, u8 reg, u8 val) {
-    struct i2c_msg msgs[2];
+    struct i2c_msg msg;
+    u8 data[2] = { reg, val };
     int ret;
 
     if (!priv || !priv->fxl6408_client) {
@@ -56,20 +62,17 @@ void t1s_hat_fxl6408_write_reg(struct lan865x_priv* priv, u8 reg, u8 val) {
         return;
     }
 
-    msgs[0].addr = FXL6408_I2C_ADDR;
-    msgs[0].flags = 0;
-    msgs[0].len = FXL6408_REG_SIZE;
-    msgs[0].buf = &reg;
+    msg.addr = FXL6408_I2C_ADDR;
+    msg.flags = 0;
+    msg.len = 2;
+    msg.buf = data;
 
-    msgs[1].addr = FXL6408_I2C_ADDR;
-    msgs[1].flags = 0;
-    msgs[1].len = FXL6408_REG_SIZE;
-    msgs[1].buf = &val;
-
-    ret = i2c_transfer(priv->fxl6408_client->adapter, msgs, sizeof(msgs) / sizeof(struct i2c_msg));
+    mutex_lock(&priv->fxl6408_lock);
+    ret = i2c_transfer(priv->fxl6408_client->adapter, &msg, 1);
     if (ret < 0) {
         pr_err("t1s_hat_fxl6408: i2c_transfer failed (ret=%d)\n", ret);
     }
+    mutex_unlock(&priv->fxl6408_lock);
 }
 
 /*
@@ -104,7 +107,7 @@ static int get_nodeid(void* data) {
         /* If button is pressed, set node_id to LAN8650 */
         if (val & FXL6408_BUTTON_INPUT_MASK) {
             priv->node_id = (val & 0xF0) >> 4;
-            pr_info("t1s_hat_fxl6408: node_id = 0x%02x\n", priv->node_id);
+            pr_debug ("t1s_hat_fxl6408: node_id = 0x%02x\n", priv->node_id);
             lan865x_set_nodeid(priv, priv->node_id);
         }
 
@@ -146,8 +149,8 @@ static void init_registers(struct lan865x_priv* priv) {
     ctrl.SW_RST = 1;
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INPUT_DEFAULT, 0x00);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_DEVICE_ID_CTRL, *(u8*)&ctrl);
+    t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_IO_DIRECTION, 0x03);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_OUTPUT_HIGH_Z, 0x00);
-    t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_IO_DIRECTION, 0x0F);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INTERRUPT_MASK, 0x00);
     ret = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_DEVICE_ID_CTRL);
 }
@@ -207,6 +210,8 @@ int t1s_hat_fxl6408_init(struct lan865x_priv* priv, struct device* dev) {
         return -EINVAL;
     }
 
+    mutex_init(&priv->fxl6408_lock);
+
     adapter = i2c_get_adapter(I2C_BUS_ADDRESS);
     if (adapter == NULL) {
         pr_warn("t1s_hat_fxl6408: failed to get i2c adapter\n");
@@ -225,6 +230,7 @@ int t1s_hat_fxl6408_init(struct lan865x_priv* priv, struct device* dev) {
     nodeid_thread = kthread_run(get_nodeid, priv, "t1s_hat_fxl6408_thread");
     wake_up_process(nodeid_thread);
 
+    priv->fxl6408_initialized = true;
     pr_info("t1s_hat_fxl6408: fxl6408 initialized\n");
 
     return ret;
