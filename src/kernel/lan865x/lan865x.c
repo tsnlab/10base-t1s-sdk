@@ -68,6 +68,28 @@ static struct oa_tc6* g_tc6;
 #define NODE_ID_OFFSET 0x0F
 #define NODE_ID_LEN 1
 
+static int lan865x_plca_check_thread_handler(void* data) {
+    struct lan865x_priv* priv = (struct lan865x_priv*)data;
+    u32 status;
+
+    while (!kthread_should_stop()) {
+        /* Check every 200ms for PLCA status */
+        msleep(200);
+
+        if (!priv->fxl6408_initialized) {
+            continue;
+        }
+
+        oa_tc6_read_register(priv->tc6, MMS4_PLCA_STS, &status);
+        if (status & PLCA_BEACON_TX_RX_MASK) {
+            t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_OUTPUT_STATE, FXL6408_PLCA_OK_LED_ON);
+        } else {
+            t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_OUTPUT_STATE, FXL6408_PLCA_OK_LED_OFF);
+        }
+    }
+    return 0;
+}
+
 int lan865x_get_node_id(struct lan865x_priv *priv)
 {
     pr_info("lan865x: get_node_id=%d\n", priv->node_id);
@@ -614,8 +636,24 @@ static int lan865x_probe(struct spi_device *spi)
     g_tc6 = priv->tc6;
     if (!priv->tc6) {
         dev_err(&spi->dev, "oa_tc6_init failed\n");
-        free_netdev(netdev);
-        return -ENODEV;
+        goto oa_tc6_init_error;
+    }
+    /* Create sysfs device */
+    ret = lan865x_sysfs_create_device(priv);
+    if (ret) {
+        dev_err(&spi->dev, "Failed to create sysfs device: %d\n", ret);
+        goto sysfs_create_error;
+    }
+    ret = t1s_hat_fxl6408_init(priv, &spi->dev);
+    if (ret) {
+        dev_err(&spi->dev, "Failed to initialize node ID updater: %d\n", ret);
+        goto t1s_hat_fxl6408_init_error;
+    }
+
+    priv->plca_check_thread = kthread_run(lan865x_plca_check_thread_handler, priv, "lan865x-plca-check-thread");
+    if (IS_ERR(priv->plca_check_thread)) {
+        dev_err(&spi->dev, "Failed to create PLCA status check thread: %ld\n", PTR_ERR(priv->plca_check_thread));
+        goto t1s_hat_fxl6408_init_error;
     }
 
     ret = oa_tc6_zero_align_receive_frame_enable(priv->tc6);
@@ -689,6 +727,7 @@ static void lan865x_remove(struct spi_device *spi)
         return;
     }
 
+    kthread_stop(priv->plca_check_thread);
     cancel_work_sync(&priv->multicast_work);
 
     /* Remove sysfs device */

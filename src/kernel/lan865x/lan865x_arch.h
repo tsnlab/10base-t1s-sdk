@@ -16,6 +16,9 @@
 
 #define LAN865X_BUFFER_SIZE (1560)
 
+#define MMS4_PLCA_STS 0x0004CA03
+#define PLCA_BEACON_TX_RX_MASK (1 << 15)
+
 #define MMS1_MAC_TSH 0x00010070
 #define MMS1_MAC_TSL 0x00010074
 #define MMS1_MAC_TN 0x00010075
@@ -88,7 +91,11 @@ struct lan865x_priv {
     uint64_t total_tx_drop_count;
 
     struct i2c_client* fxl6408_client;
+    struct mutex fxl6408_lock;
+    bool fxl6408_initialized;
     u8 node_id;
+
+    struct task_struct* plca_check_thread;
 };
 
 struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_info);
