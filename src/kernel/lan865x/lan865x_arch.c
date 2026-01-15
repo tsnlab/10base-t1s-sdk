@@ -20,7 +20,7 @@ sysclock_t lan865x_get_sys_clock(struct lan865x_priv* priv) {
     /* NOTE: Linux timespec64 is 64-bit, but we only use 32-bit seconds and nanoseconds */
     (void)sec_h;
         
-    tmp_sec = sec_l * NS_IN_1S;
+    tmp_sec = (u64)sec_l * NS_IN_1S;
     nsec = nsec & 0x3FFFFFFF;
 
     clock = tmp_sec + nsec;
@@ -155,6 +155,7 @@ int lan865x_update_tx_packets(struct lan865x_priv* priv) {
     if ((total_tx_count - tx_count) > 0) {
         priv->total_tx_drop_count += (total_tx_count - tx_count);
     }
+
     return 0;
 }
 
