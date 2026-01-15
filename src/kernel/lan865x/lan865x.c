@@ -101,7 +101,7 @@ int lan865x_set_nodeid(struct lan865x_priv *priv, u32 node_id)
     u32 regval = (LAN8650_NODE_MAX_COUNT << NODE_ID_BITS_WIDTH) |
                  (node_id & NODE_ID_MASK);
 
-    pr_info("lan865x: set_nodeid=%u (regval=0x%08x)\n", node_id, regval);
+    pr_debug("lan865x: set_nodeid=%u (regval=0x%08x)\n", node_id, regval);
     return oa_tc6_write_register(priv->tc6, LAN865X_REG_PLCA_CTRL1, regval);
 }
 
