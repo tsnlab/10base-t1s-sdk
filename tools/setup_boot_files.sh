@@ -59,9 +59,9 @@ driver() {
     sudo echo "i2c-bcm2835" | sudo tee -a "${ROOT_MOUNTPOINT}"/etc/modules
     sudo echo "i2c-brcmstb" | sudo tee -a "${ROOT_MOUNTPOINT}"/etc/modules
   fi
+  sudo cp tools/config.txt "${BOOT_MOUNTPOINT}"
   sudo cp lan8650.dtbo "${BOOT_MOUNTPOINT}"/overlays/
   sudo cp lan865x.ko "${ROOT_MOUNTPOINT}"/opt/
-  sudo cp config.txt "${BOOT_MOUNTPOINT}"/overlays/
 }
 
 if ! sudo mount "${BOOT_PARTITION}" "${BOOT_MOUNTPOINT}"; then
@@ -75,7 +75,7 @@ fi
 
 set -e
 
-# kernel
+kernel
 driver
 
 sudo umount "${BOOT_MOUNTPOINT}" "${ROOT_MOUNTPOINT}"
