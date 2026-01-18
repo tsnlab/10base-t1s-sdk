@@ -1,6 +1,7 @@
 #ifndef LAN865X_ARCH_H
 #define LAN865X_ARCH_H
 
+#include <linux/i2c.h>
 #include <linux/net_tstamp.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/types.h>
@@ -14,6 +15,9 @@
 #include <linux/oa_tc6.h>
 
 #define LAN865X_BUFFER_SIZE (1560)
+
+#define MMS4_PLCA_STS 0x0004CA03
+#define PLCA_BEACON_TX_RX_MASK (1 << 15)
 
 #define MMS1_MAC_TSH 0x00010070
 #define MMS1_MAC_TSL 0x00010074
@@ -85,6 +89,13 @@ struct lan865x_priv {
 
     uint64_t total_tx_count;
     uint64_t total_tx_drop_count;
+
+    struct i2c_client* fxl6408_client;
+    struct mutex fxl6408_lock;
+    bool fxl6408_initialized;
+    u8 node_id;
+
+    struct task_struct* plca_check_thread;
 };
 
 struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_info);
@@ -99,5 +110,6 @@ timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id);
 u64 lan865x_get_tx_packets(struct lan865x_priv* priv);
 u64 lan865x_get_tx_drop_packets(struct lan865x_priv* priv);
 int lan865x_update_tx_packets(struct lan865x_priv* priv);
+int lan865x_set_nodeid(struct lan865x_priv* priv, u32 node_id);
 
 #endif /* LAN865X_ARCH_H */

@@ -15,8 +15,10 @@
                 compatible = "microchip,lan8651", "microchip,lan8650";
                 reg = <0>;  /* CE0 */
                 interrupt-parent = <&gpio>;
-                interrupts = <23 2>; /* IRQ_TYPE_EDGE_FALLING */
-                reset-gpios = <&gpio 22 0>; /* GPIO_ACTIVE_LOW */
+                /* Pin 23: IRQ_TYPE_EDGE_FALLING, Pin 24: IRQ_TYPE_LEVEL_LOW */
+                interrupts = <23 2>, <24 8>;
+                nodeid-gpios = <&gpio 24 1>;  /* GPIO_ACTIVE_LOW */
+                reset-gpios = <&gpio 22 0>;   /* GPIO_ACTIVE_HIGH */
                 #status = "okay";
                 #spi-cpol;
                 #spi-cpha;

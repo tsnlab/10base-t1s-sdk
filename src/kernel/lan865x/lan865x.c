@@ -24,6 +24,8 @@
 
 #include "lan865x_ioctl.h"
 #include "lan865x_arch.h"
+#include "lan865x_sysfs.h"
+#include "t1s_hat_fxl6408.h"
 #ifdef FRAME_TIMESTAMP_ENABLE
 #include "lan865x_ptp.h"
 #include <linux/net_tstamp.h>
@@ -66,54 +68,40 @@ static struct oa_tc6* g_tc6;
 #define NODE_ID_OFFSET 0x0F
 #define NODE_ID_LEN 1
 
-/* ---------- Helper Functions for Register Access ---------- */
-static int read_nodeid_from_fxl6408(struct device *dev)
-{
-    struct i2c_adapter *adap;
-    struct i2c_msg msgs[2];
-    u8 reg = NODE_ID_OFFSET;
-    u8 val = 0;
-    int ret;
-    int node_id;
+static int lan865x_plca_check_thread_handler(void* data) {
+    struct lan865x_priv* priv = (struct lan865x_priv*)data;
+    u32 status;
 
-    adap = i2c_get_adapter(1);
-    if (!adap) {
-        dev_err(dev, "DIPSW: failed to get i2c adapter 1\n");
-        return -ENODEV;
+    while (!kthread_should_stop()) {
+        /* Check every 200ms for PLCA status */
+        msleep(200);
+
+        if (!priv->fxl6408_initialized) {
+            continue;
+        }
+
+        oa_tc6_read_register(priv->tc6, MMS4_PLCA_STS, &status);
+        if (status & PLCA_BEACON_TX_RX_MASK) {
+            t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_OUTPUT_STATE, FXL6408_PLCA_OK_LED_ON);
+        } else {
+            t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_OUTPUT_STATE, FXL6408_PLCA_OK_LED_OFF);
+        }
     }
-
-    /* write reg address (0x0F) */
-    msgs[0].addr  = FXL6408_I2C_ADDR;
-    msgs[0].flags = 0;
-    msgs[0].len   = NODE_ID_LEN;
-    msgs[0].buf   = &reg;
-
-    /* read data */
-    msgs[1].addr  = FXL6408_I2C_ADDR;
-    msgs[1].flags = I2C_M_RD;
-    msgs[1].len   = NODE_ID_LEN;
-    msgs[1].buf   = &val;
-
-    ret = i2c_transfer(adap, msgs, sizeof(msgs)/sizeof(struct i2c_msg));
-    i2c_put_adapter(adap);
-
-    if (ret < 0) {
-        dev_err(dev, "DIPSW: i2c_transfer failed (ret=%d)\n", ret);
-        return ret;
-    }
-
-    /* NodeID = bits[7:4] */
-    node_id = (val >> 4) & 0x0F;
-    dev_info(dev, "DIPSW: NodeID=%d (from raw=0x%02x)\n", node_id, val);
-    return node_id;
+    return 0;
 }
 
-static int lan865x_set_nodeid(struct lan865x_priv *priv, u32 node_id)
+int lan865x_get_node_id(struct lan865x_priv *priv)
+{
+    pr_debug("lan865x: get_node_id=%d\n", priv->node_id);
+    return priv->node_id;
+}
+
+int lan865x_set_nodeid(struct lan865x_priv *priv, u32 node_id)
 {
     u32 regval = (LAN8650_NODE_MAX_COUNT << NODE_ID_BITS_WIDTH) |
                  (node_id & NODE_ID_MASK);
 
-    pr_info("lan865x: set_nodeid=%u (regval=0x%08x)\n", node_id, regval);
+    pr_debug("lan865x: set_nodeid=%u (regval=0x%08x)\n", node_id, regval);
     return oa_tc6_write_register(priv->tc6, LAN865X_REG_PLCA_CTRL1, regval);
 }
 
@@ -548,12 +536,10 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
     }
 #endif
 
-int node_id = read_nodeid_from_fxl6408(dev);
-    if (node_id < 0)
-    {
-        dev_err(dev, "Failed to get node_id from i2c, Set to default 0x0F\n");
-        node_id = 0x0F;
-    }
+    /* Read input status register */
+    u8 val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
+    u8 node_id = (val & 0xF0) >> 4;
+    priv->node_id = node_id;
     lan865x_set_nodeid(priv, node_id);
 
 #ifdef ENABLE_DIPSWITCH
@@ -605,17 +591,30 @@ static int lan865x_probe(struct spi_device *spi)
     g_tc6 = priv->tc6;
     if (!priv->tc6) {
         dev_err(&spi->dev, "oa_tc6_init failed\n");
-        free_netdev(netdev);
-        return -ENODEV;
+        goto oa_tc6_init_error;
+    }
+    /* Create sysfs device */
+    ret = lan865x_sysfs_create_device(priv);
+    if (ret) {
+        dev_err(&spi->dev, "Failed to create sysfs device: %d\n", ret);
+        goto sysfs_create_error;
+    }
+    ret = t1s_hat_fxl6408_init(priv, &spi->dev);
+    if (ret) {
+        dev_err(&spi->dev, "Failed to initialize node ID updater: %d\n", ret);
+        goto t1s_hat_fxl6408_init_error;
+    }
+
+    priv->plca_check_thread = kthread_run(lan865x_plca_check_thread_handler, priv, "lan865x-plca-check-thread");
+    if (IS_ERR(priv->plca_check_thread)) {
+        dev_err(&spi->dev, "Failed to create PLCA status check thread: %ld\n", PTR_ERR(priv->plca_check_thread));
+        goto t1s_hat_fxl6408_init_error;
     }
 
     ret = oa_tc6_zero_align_receive_frame_enable(priv->tc6);
     if (ret) {
         dev_err(&spi->dev, "Failed to set ZARFE: %d\n", ret);
-        g_tc6 = NULL;
-        oa_tc6_exit(priv->tc6);
-        free_netdev(netdev);
-        return -ENODEV;
+        goto zero_align_receive_frame_enable_error;
     }
 
     u8 mac[ETH_ALEN];
@@ -631,28 +630,35 @@ static int lan865x_probe(struct spi_device *spi)
     ret = register_netdev(netdev);
     if (ret) {
         dev_err(&spi->dev, "register_netdev failed: %d\n", ret);
-        g_tc6 = NULL;
-        oa_tc6_exit(priv->tc6);
-        free_netdev(netdev);
-        return ret;
+        goto register_netdev_error;
     }
 
 #ifdef FRAME_TIMESTAMP_ENABLE
     priv->ptpdev = ptp_device_init(&spi->dev, priv->tc6, (s32)spi->max_speed_hz);
     if (!priv->ptpdev) {
         dev_err(&spi->dev, "ptp_device_init() failed\n");
-        unregister_netdev(netdev);
-        g_tc6 = NULL;
-        oa_tc6_exit(priv->tc6);
-        free_netdev(netdev);
-        return -ENODEV;
+        goto ptp_device_init_error;
     }
 #else /* FRAME_TIMESTAMP_ENABLE */
     priv->ptpdev = NULL;
 #endif /* FRAME_TIMESTAMP_ENABLE */
-
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
+    
     return 0;
+
+ptp_device_init_error:
+    unregister_netdev(netdev);
+register_netdev_error:
+zero_align_receive_frame_enable_error:
+t1s_hat_fxl6408_init_error:
+    t1s_hat_fxl6408_exit(priv);
+sysfs_create_error:
+    lan865x_sysfs_remove_device(priv);
+oa_tc6_init_error:
+    g_tc6 = NULL;
+    oa_tc6_exit(priv->tc6);
+    free_netdev(netdev);
+    return -ENODEV;
 }
 
 static void lan865x_remove(struct spi_device *spi)
@@ -671,7 +677,12 @@ static void lan865x_remove(struct spi_device *spi)
         return;
     }
 
+    kthread_stop(priv->plca_check_thread);
     cancel_work_sync(&priv->multicast_work);
+
+    /* Remove sysfs device */
+    lan865x_sysfs_remove_device(priv);
+    t1s_hat_fxl6408_exit(priv);
 
     dev_info(&spi->dev, "lan865x: unregistering netdev %s\n", netdev_name(netdev));
     dev_info(&spi->dev, "lan865x: MAC before unregister %pM\n", netdev->dev_addr);
@@ -763,7 +774,29 @@ static struct spi_driver lan865x_driver = {
     .remove = lan865x_remove,
 };
 
-module_spi_driver(lan865x_driver);
+static int __init lan865x_init(void)
+{
+    int ret;
+
+    /* Initialize sysfs */
+    ret = lan865x_sysfs_init();
+    if (ret) {
+        pr_err("lan865x: failed to initialize sysfs: %d\n", ret);
+        return ret;
+    }
+
+    /* Register SPI driver */
+    return spi_register_driver(&lan865x_driver);
+}
+
+static void __exit lan865x_exit(void)
+{
+    spi_unregister_driver(&lan865x_driver);
+    lan865x_sysfs_exit();
+}
+
+module_init(lan865x_init);
+module_exit(lan865x_exit);
 
 MODULE_DESCRIPTION("LAN865x 10Base-T1S MACPHY Ethernet Driver (Standalone)");
 MODULE_AUTHOR("Microchip / sbcho integration");

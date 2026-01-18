@@ -92,7 +92,7 @@ $ dtc -@ -I dts -O dtb -o lan8650.dtbo lan8650-overlay.dts
 ```
 or
 ```bash
-$ source dts-scripts.sh
+$ source tools/dts-scripts.sh
 ```
 
 Deploy overlay
@@ -149,7 +149,7 @@ Check device environment
 
 spi device info
 ```bash
-$ source show-spi.sh
+$ source tools/show-spi.sh
 
 DEV      DRIVER       MODE   MAX_HZ       IRQ     DT_NODE
 spi0.0   driver                           -       /sys/firmware/devicetree/base/soc/spi@7e204000/ethernet@0

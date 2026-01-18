@@ -8,6 +8,9 @@
 *.obj
 *.elf
 
+# Device tree blob overlay
+*.dtbo
+
 # Linker output
 *.ilk
 *.map
@@ -189,3 +192,6 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# ctags
+tags
