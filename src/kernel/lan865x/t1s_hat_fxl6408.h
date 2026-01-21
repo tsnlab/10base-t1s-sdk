@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0+
+/*
+ * T1S HAT FXL6408 GPIO expander driver header
+ *
+ * Original Author: Harim Seong <harim@tsnlab.com>
+ */
+
 #ifndef _T1S_HAT_FXL6408_H_
 #define _T1S_HAT_FXL6408_H_
 

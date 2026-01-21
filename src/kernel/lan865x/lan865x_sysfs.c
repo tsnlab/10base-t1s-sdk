@@ -1,6 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-3.0+
 /*
  * LAN865x sysfs interface implementation
+ *
+ * Original Author: Jihoon Park <pakji@tsnlab.com>
  */
 
 #include "lan865x_sysfs.h"
