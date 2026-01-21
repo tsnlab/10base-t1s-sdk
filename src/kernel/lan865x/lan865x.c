@@ -3,7 +3,6 @@
  * Microchip's LAN865x 10BASE-T1S MAC-PHY driver (Standalone, no DT dependency)
  *
  * Original Author: Parthiban Veerasooran <parthiban.veerasooran@microchip.com>
- * Modified: sbcho + ChatGPT integration
  */
 
 #include <linux/device.h>
