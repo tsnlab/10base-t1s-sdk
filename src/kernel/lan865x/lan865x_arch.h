@@ -2,6 +2,7 @@
 /*
  * LAN865x architecture-specific header
  *
+ * Copyright (c) 2026 TSN Lab
  * Original Author: Jihoon Park <pakji@tsnlab.com>
  */
 

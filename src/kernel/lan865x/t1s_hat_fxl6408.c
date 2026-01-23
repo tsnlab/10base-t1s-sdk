@@ -2,6 +2,7 @@
 /*
  * T1S HAT FXL6408 GPIO expander driver
  *
+ * Copyright (c) 2026 TSN Lab
  * Original Author: Harim Seong <harim@tsnlab.com>
  */
 

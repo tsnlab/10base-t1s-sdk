@@ -2,6 +2,7 @@
 /*
  * LAN865x sysfs interface implementation
  *
+ * Copyright (c) 2026 TSN Lab
  * Original Author: Jihoon Park <pakji@tsnlab.com>
  */
 

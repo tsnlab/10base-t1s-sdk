@@ -2,6 +2,7 @@
 /*
  * LAN865x architecture-specific functions
  *
+ * Copyright (c) 2026 TSN Lab
  * Original Author: Jihoon Park <pakji@tsnlab.com>
  */
 
