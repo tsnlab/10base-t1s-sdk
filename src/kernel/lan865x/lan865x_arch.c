@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0+
+/*
+ * LAN865x architecture-specific functions
+ *
+ * Copyright (c) 2026 TSN Lab
+ * Original Author: Jihoon Park <pakji@tsnlab.com>
+ */
+
 #include "lan865x_arch.h"
 
 #include <linux/io.h>

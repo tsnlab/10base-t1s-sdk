@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0+
+/*
+ * T1S HAT FXL6408 GPIO expander driver
+ *
+ * Copyright (c) 2026 TSN Lab
+ * Original Author: Harim Seong <harim@tsnlab.com>
+ */
+
 #include "t1s_hat_fxl6408.h"
 #include "lan865x_arch.h"
 

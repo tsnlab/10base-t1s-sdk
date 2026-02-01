@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0+
+/*
+ * LAN865x PTP (Precision Time Protocol) implementation
+ *
+ * Copyright (c) 2026 TSN Lab
+ * Original Author: Jihoon Park <pakji@tsnlab.com>
+ */
+
 #ifdef FRAME_TIMESTAMP_ENABLE
 
 #include "lan865x_ptp.h"

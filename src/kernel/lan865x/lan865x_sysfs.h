@@ -1,6 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-3.0+
 /*
  * LAN865x sysfs interface header
+ *
+ * Copyright (c) 2026 TSN Lab
+ * Original Author: Jihoon Park <pakji@tsnlab.com>
  */
 
 #ifndef _LAN865X_SYSFS_H_
