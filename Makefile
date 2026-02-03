@@ -21,7 +21,7 @@ else
     CROSS_COMPILE := aarch64-linux-gnu-
 	KERNEL_DIR := $(RPI4_KERNEL_DIR)
     TOOLCHAIN := $(shell which $(CROSS_COMPILE)gcc)
-    EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE # -DDEBUG -D__LAN865X_DEBUG__
+    EXTRA_CFLAGS += 
 endif
 
 # ========================
@@ -68,6 +68,9 @@ ifeq ($(BOARD),rpi5)
     DRIVER_INCLUDES += -I$(KERNEL_DIR)/arch/arm64/include
     EXTRA_CFLAGS += -march=armv8.2-a+crc+simd -mtune=cortex-a76
 endif
+
+# Enable default compile flags
+EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE -DDEBUG -D__LAN865X_DEBUG__
 
 # ========================
 #  Build Targets
