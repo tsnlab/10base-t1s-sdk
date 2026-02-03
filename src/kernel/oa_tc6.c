@@ -641,10 +641,20 @@ static int oa_tc6_read_status0(struct oa_tc6 *tc6)
 
 static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 {
+#if 0 // Origin
 	u32 regval = RESET_SWRESET;
 	int ret;
 
 	pr_info("oa_tc6_sw_reset_macphy: starting soft reset\n");
+#else // Jihoon
+	u32 regval;
+	int ret;
+
+	oa_tc6_read_register(tc6, OA_TC6_REG_STATUS0, &regval);
+	pr_info("oa_tc6_sw_reset_macphy: STATUS0=0x%08x\n", regval);
+	
+	regval = RESET_SWRESET;
+#endif
 
 	ret = oa_tc6_write_register(tc6, OA_TC6_REG_RESET, regval);
 	if (ret) {
