@@ -196,6 +196,20 @@ static int lan865x_ptp_gettimex64(struct ptp_clock_info* ptp_info, struct timesp
     res_ts->tv_sec = timestamp / NS_IN_1S;
     res_ts->tv_nsec = timestamp % NS_IN_1S;
 
+    /*
+    * NOTE:
+    * Since the LAN865x device communicates over SPI, consecutive register accesses
+    * without sufficient delay can cause SPI buffering and transaction backlog.
+    * This may introduce additional latency, resulting in a large time offset
+    * between the host clock and the device clock (e.g., observed via phc2sys).
+    *
+    * Therefore, appropriate inter-access delays are required to ensure
+    * stable SPI transactions and accurate time synchronization.
+    */
+    udelay(500);
+
+    LAN865X_DEBUG("%s: timestamp = %llu, res_ts = %llu.%llu\n", __func__, timestamp, res_ts->tv_sec, res_ts->tv_nsec);
+
     spin_unlock_irqrestore(&ptpdev->lock, flags);
 
     return 0;
