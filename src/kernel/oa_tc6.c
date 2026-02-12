@@ -1705,8 +1705,6 @@ struct oa_tc6 *oa_tc6_init(struct spi_device *spi, struct net_device *netdev)
 	tc6->spi->rt = true;
 	spi_setup(tc6->spi);
 
-	pr_info("lan865x: requesting IRQ %d\n", tc6->spi->irq);
-
 	tc6->spi_ctrl_tx_buf = devm_kzalloc(
 		&tc6->spi->dev, OA_TC6_CTRL_SPI_BUF_SIZE, GFP_KERNEL);
 	if (!tc6->spi_ctrl_tx_buf)

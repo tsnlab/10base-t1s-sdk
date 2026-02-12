@@ -14,14 +14,10 @@
             lan8650: ethernet@0 {
                 compatible = "microchip,lan8651", "microchip,lan8650";
                 reg = <0>;  /* CE0 */
-                interrupt-parent = <&gpio>;
-                /* Pin 23: IRQ_TYPE_EDGE_FALLING, Pin 24: IRQ_TYPE_LEVEL_LOW */
-                interrupts = <23 2>, <24 8>;
-                nodeid-gpios = <&gpio 24 1>;  /* GPIO_ACTIVE_LOW */
-                reset-gpios = <&gpio 22 0>;   /* GPIO_ACTIVE_HIGH */
-                #status = "okay";
-                #spi-cpol;
-                #spi-cpha;
+
+                /* Note: RPI5  */
+                lan8651irq-gpios = <&gpio 23 1>; /* GPIO_ACTIVE_LOW */
+                fxl6408irq-gpios = <&gpio 24 1>; /* GPIO_ACTIVE_LOW */
             };
         };
     };

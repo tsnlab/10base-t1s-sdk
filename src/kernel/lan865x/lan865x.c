@@ -56,10 +56,6 @@
 #define MAC_ADDR_LENGTH 6
 #define NUM_OF_BITS_IN_BYTE 8
 
-/* GPIO fallback (if not DT-provided) */
-#define LAN865X_RESET_GPIO    22
-#define LAN865X_IRQ_GPIO      23
-
 static struct oa_tc6* g_tc6;
 
 #define FXL6408_I2C_BUS   20
@@ -558,23 +554,29 @@ static int lan865x_probe(struct spi_device *spi)
 {
     struct net_device *netdev;
     struct lan865x_priv *priv;
+    struct gpio_desc* lan8651_phy_irq_gpiod;
+    int lan8651_phy_irq;
     int ret;
 
+    /* Get lan8651 phy irq from device tree*/
+    lan8651_phy_irq_gpiod = devm_gpiod_get(&spi->dev, "lan8651irq", GPIOD_IN);
+    if (IS_ERR(lan8651_phy_irq_gpiod)) {
+        ret = PTR_ERR(lan8651_phy_irq_gpiod);
+        dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
+        return -EFAULT;
+    }
+    lan8651_phy_irq = gpiod_to_irq(lan8651_phy_irq_gpiod);
+    if (lan8651_phy_irq < 0) {
+        dev_err(&spi->dev, "Failed to get IRQ: %d\n", lan8651_phy_irq);
+        return -EFAULT;
+    }
+
+    /* Set spi mode */
     spi->mode = SPI_MODE_3;
     spi->mode &= ~SPI_CS_HIGH;
     spi->bits_per_word = 8;
     spi->max_speed_hz = 25000000;
-
-    ret = spi_setup(spi);
-    if (ret) {
-        dev_err(&spi->dev, "spi_setup failed: %d\n", ret);
-        return ret;
-    }
-
-    dev_info(&spi->dev,
-        ">>> probe start (bus=%d, cs=%u, max_hz=%d, mode=%d)\n",
-        spi->controller->bus_num, (unsigned int) spi->chip_select,
-        spi->max_speed_hz, spi->mode);
+    spi->irq = lan8651_phy_irq;
 
     netdev = alloc_etherdev(sizeof(*priv));
     if (!netdev)
@@ -584,9 +586,7 @@ static int lan865x_probe(struct spi_device *spi)
     priv->netdev = netdev;
     priv->spi = spi;
 
-    spi_set_drvdata(spi, priv);
-    INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
-
+    /* Initialize oa_tc6 and lan8651*/
     priv->tc6 = oa_tc6_init(spi, netdev);
     g_tc6 = priv->tc6;
     if (!priv->tc6) {
@@ -594,7 +594,10 @@ static int lan865x_probe(struct spi_device *spi)
         goto oa_tc6_init_error;
     }
 
-#if 1 // Jihoon
+    spi_set_drvdata(spi, priv);
+    INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
+
+#if 0 // Jihoon
     #define LAN8650_REG_MMS00_OA_ID     0x00000000
     #define LAN8650_REG_MMS00_OA_PHYID  0x00000001
     #define LAN8650_REG_MMS10_DEVID     0x000A0094
@@ -611,7 +614,7 @@ static int lan865x_probe(struct spi_device *spi)
 	pr_info("lan865x: DEVID=0x%08x\n", regval);
 #endif
 
-    #if 0 /* Jihoon */
+#if 1 /* Jihoon */
 
     /* Create sysfs device */
     ret = lan865x_sysfs_create_device(priv);
@@ -712,7 +715,6 @@ static void lan865x_remove(struct spi_device *spi)
         return;
     }
 
-#if 0 /* Jihoon */
     kthread_stop(priv->plca_check_thread);
     cancel_work_sync(&priv->multicast_work);
 
@@ -735,7 +737,6 @@ static void lan865x_remove(struct spi_device *spi)
     }
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
-#else
     if (priv->tc6) {
         dev_info(&spi->dev, "lan865x: calling oa_tc6_exit\n");
         g_tc6 = NULL;
@@ -746,8 +747,6 @@ static void lan865x_remove(struct spi_device *spi)
     dev_info(&spi->dev, "lan865x: MAC before free %pM\n", netdev->dev_addr);
 
     free_netdev(netdev);
-    t1s_hat_fxl6408_exit(priv);
-#endif /* Jihoon */
 
     dev_info(&spi->dev, "lan865x: remove finished\n");
 }
