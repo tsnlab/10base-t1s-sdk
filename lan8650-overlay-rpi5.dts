@@ -15,7 +15,6 @@
                 compatible = "microchip,lan8651", "microchip,lan8650";
                 reg = <0>;  /* CE0 */
 
-                /* Note: RPI5  */
                 lan8651irq-gpios = <&gpio 23 1>; /* GPIO_ACTIVE_LOW */
                 fxl6408irq-gpios = <&gpio 24 1>; /* GPIO_ACTIVE_LOW */
             };

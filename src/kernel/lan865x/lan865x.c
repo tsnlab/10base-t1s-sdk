@@ -6,6 +6,7 @@
  */
 
 #include <linux/device.h>
+#include <linux/platform_device.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/miscdevice.h>
@@ -558,6 +559,16 @@ static int lan865x_probe(struct spi_device *spi)
     int lan8651_phy_irq;
     int ret;
 
+#ifdef CONFIG_RPI4
+    (void)lan8651_phy_irq_gpiod;
+
+    /* Get lan8651 phy irq from platform device*/
+    lan8651_phy_irq = platform_get_irq(to_platform_device(&spi->dev), 0 /* TODO Macro */);
+    if (lan8651_phy_irq < 0) {
+        dev_err(&spi->dev, "Failed to get IRQ: %d\n", lan8651_phy_irq);
+        return -EFAULT;
+    }
+#elif defined(CONFIG_RPI5)
     /* Get lan8651 phy irq from device tree*/
     lan8651_phy_irq_gpiod = devm_gpiod_get(&spi->dev, "lan8651irq", GPIOD_IN);
     if (IS_ERR(lan8651_phy_irq_gpiod)) {
@@ -570,6 +581,7 @@ static int lan865x_probe(struct spi_device *spi)
         dev_err(&spi->dev, "Failed to get IRQ: %d\n", lan8651_phy_irq);
         return -EFAULT;
     }
+#endif
 
     /* Set spi mode */
     spi->mode = SPI_MODE_3;

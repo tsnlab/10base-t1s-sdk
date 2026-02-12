@@ -21,7 +21,7 @@ else
     CROSS_COMPILE := aarch64-linux-gnu-
 	KERNEL_DIR := $(RPI4_KERNEL_DIR)
     TOOLCHAIN := $(shell which $(CROSS_COMPILE)gcc)
-    EXTRA_CFLAGS += 
+    EXTRA_CFLAGS += -DCONFIG_RPI4=1
 endif
 
 # ========================
@@ -70,7 +70,7 @@ ifeq ($(BOARD),rpi5)
 endif
 
 # Enable default compile flags
-EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE -DDEBUG -D__LAN865X_DEBUG__
+EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE #-DDEBUG -D__LAN865X_DEBUG__
 
 # ========================
 #  Build Targets

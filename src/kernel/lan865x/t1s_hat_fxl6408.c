@@ -173,9 +173,8 @@ static int init_interrupt(struct lan865x_priv* priv, struct device* dev) {
         pr_err("t1s_hat_fxl6408: device does not have device tree node\n");
         return -ENODEV;
     }
-
-    pr_info("t1s_hat_fxl6408: device tree node exists: %pOF\n", dev->of_node);
-
+    
+    /* Get fxl6408 irq from device tree*/
     fxl6408_irq_gpiod = devm_gpiod_get(dev, "fxl6408irq", GPIOD_IN);
     if (IS_ERR(fxl6408_irq_gpiod)) {
         ret = PTR_ERR(fxl6408_irq_gpiod);
