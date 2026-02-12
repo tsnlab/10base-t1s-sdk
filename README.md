@@ -88,11 +88,8 @@ A sample overlay source is provided: lan8650-overlay.dts
 
 Compile overlay device tree
 ```bash
-$ dtc -@ -I dts -O dtb -o lan8650.dtbo lan8650-overlay.dts
-```
-or
-```bash
-$ source tools/dts-scripts.sh
+$ chmod +x ./tools/dts-scripts.sh
+$ ./tools/dts-scripts.sh
 ```
 
 Deploy overlay
@@ -100,7 +97,7 @@ Deploy overlay
 Copy the compiled file into overlay directory:
 
 ```bash
-$ sudo cp lan8650.dtbo /boot/firmware/overlays/
+$ sudo cp lan8650-[rpi4|rpi5].dtbo /boot/firmware/overlays/
 ```
 
 Update config.txt
@@ -120,24 +117,7 @@ dtparam=spi=on
 Set the overlay device tree
 ```bash
 [all]
-dtoverlay=lan8650
-```
-
-Load i2c drivers
-```bash
-$ sudo nano /etc/modules
-```
-
-Add i2c drivers
-```bash
-# /etc/modules: kernel modules to load at boot time.
-#
-# This file contains the names of kernel modules that should be loaded
-# at boot time, one per line. Lines beginning with "#" are ignored.
-# Parameters can be specified after the module name.
-i2c-dev
-i2c-bcm2835
-i2c-brcmstb
+dtoverlay=lan8650-[rpi4|rpi5]
 ```
 
 Reboot:
@@ -145,6 +125,7 @@ Reboot:
 $ sudo reboot
 ```
 
+<!--
 Check device environment
 
 spi device info
@@ -167,6 +148,7 @@ i2c-21  unknown         fef09500.i2c                            N/A
 $ sudo i2cget -y 1 0x43 0x0f
 <pin node_id>
 ```
+-->
 
 # 5. Clean
 
