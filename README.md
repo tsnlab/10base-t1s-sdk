@@ -1,4 +1,4 @@
-# README – 10Base-t1s Raspberry Linux Module Driver
+# 10Base-T1S Raspberry Linux Module Driver
 
 This document describes how to build and deploy the Microchip LAN865x 10BASE-T1S MAC-PHY driver on Raspberry Pi (RPi4 / RPi5).
 
