@@ -559,7 +559,7 @@ static int lan865x_probe(struct spi_device *spi)
     int lan8651_phy_irq;
     int ret;
 
-#ifdef CONFIG_RPI4
+#if defined(CONFIG_RPI4)
     (void)lan8651_phy_irq_gpiod;
 
     /* Get lan8651 phy irq from platform device*/
