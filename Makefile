@@ -76,7 +76,7 @@ ifeq ($(BOARD),rpi5)
 endif
 
 # Enable default compile flags
-EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE #-DDEBUG -D__LAN865X_DEBUG__
+EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE -DDEBUG -D__LAN865X_DEBUG__
 
 # ========================
 #  Build Targets
