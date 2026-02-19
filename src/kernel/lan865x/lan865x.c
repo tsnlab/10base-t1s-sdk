@@ -609,25 +609,6 @@ static int lan865x_probe(struct spi_device *spi)
     spi_set_drvdata(spi, priv);
     INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
 
-#if 0 // Jihoon
-    #define LAN8650_REG_MMS00_OA_ID     0x00000000
-    #define LAN8650_REG_MMS00_OA_PHYID  0x00000001
-    #define LAN8650_REG_MMS10_DEVID     0x000A0094
-
-	u32 regval;
-
-	oa_tc6_read_register(priv->tc6, LAN8650_REG_MMS00_OA_ID, &regval);
-	pr_info("lan865x: OA_ID=0x%08x\n", regval);
-
-	//oa_tc6_read_register(priv->tc6, LAN8650_REG_MMS00_OA_PHYID, &regval);
-	//pr_info("lan865x: OA_PHYID=0x%08x\n", regval);
-
-	oa_tc6_read_register(priv->tc6, LAN8650_REG_MMS10_DEVID, &regval);
-	pr_info("lan865x: DEVID=0x%08x\n", regval);
-#endif
-
-#if 1 /* Jihoon */
-
     /* Create sysfs device */
     ret = lan865x_sysfs_create_device(priv);
     if (ret) {
@@ -680,21 +661,6 @@ static int lan865x_probe(struct spi_device *spi)
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
     
     return 0;
-
-#else /* Jihoon */
-    ret = t1s_hat_fxl6408_init(priv, &spi->dev);
-    if (ret) {
-        dev_err(&spi->dev, "Failed to initialize node ID updater: %d\n", ret);
-        goto t1s_hat_fxl6408_init_error;
-    }
-
-    u8 val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
-    u8 node_id = (val & 0xF0) >> 4;
-    priv->node_id = node_id;
-    dev_info(&spi->dev, "node_id: %d\n", node_id);
-
-    return 0;
-#endif /* Jihoon */
 
 ptp_device_init_error:
     unregister_netdev(netdev);
