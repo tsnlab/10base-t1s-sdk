@@ -88,8 +88,11 @@ A sample overlay source is provided: lan8650-overlay.dts
 
 Compile overlay device tree
 ```bash
-$ chmod +x ./tools/dts-scripts.sh
-$ ./tools/dts-scripts.sh
+# rpi4
+$ dtc -@ -I dts -O dtb -o lan8650.dtbo lan8650-overlay-rpi4.dts
+
+# rpi5
+$ dtc -@ -I dts -O dtb -o lan8650.dtbo lan8650-overlay-rpi5.dts
 ```
 
 Deploy overlay
@@ -97,7 +100,7 @@ Deploy overlay
 Copy the compiled file into overlay directory:
 
 ```bash
-$ sudo cp lan8650-[rpi4|rpi5].dtbo /boot/firmware/overlays/
+$ sudo cp lan8650.dtbo /boot/firmware/overlays/
 ```
 
 Update config.txt
@@ -117,7 +120,7 @@ dtparam=spi=on
 Set the overlay device tree
 ```bash
 [all]
-dtoverlay=lan8650-[rpi4|rpi5]
+dtoverlay=lan8650
 ```
 
 Reboot:
