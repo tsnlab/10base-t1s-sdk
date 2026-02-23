@@ -82,7 +82,7 @@ struct ptp_device {
     u32 ti_subnano_b24; // timer increase every clock (25MHz) cycle
     u64 offset;
 
-    spinlock_t lock;
+    struct mutex lock;
 };
 
 struct lan865x_priv {
