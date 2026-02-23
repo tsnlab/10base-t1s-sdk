@@ -13,20 +13,21 @@
 
 sysclock_t lan865x_get_sys_clock(struct lan865x_priv* priv) {
     struct oa_tc6* tc6 = priv->tc6;
+    int ret;
 
     u32 sec_h;
     u32 sec_l;
     u32 nsec;
     u64 tmp_sec, clock;
 
-    if (oa_tc6_read_register(tc6, MMS1_MAC_TN, &nsec))
-        return -ENODEV;
-    if (oa_tc6_read_register(tc6, MMS1_MAC_TSL, &sec_l))
-        return -ENODEV;
-    //if (oa_tc6_read_register(tc6, MMS1_MAC_TSH, &sec_h))
-    //    return -ENODEV;
-    
+    if ((ret = oa_tc6_read_register(tc6, MMS1_MAC_TN, &nsec)))
+        return ret;
+    if ((ret = oa_tc6_read_register(tc6, MMS1_MAC_TSL, &sec_l)))
+        return ret;
+
     /* NOTE: Linux timespec64 is 64-bit, but we only use 32-bit seconds and nanoseconds */
+    //if (oa_tc6_read_register(tc6, MMS1_MAC_TSH, &sec_h))
+    //    return ret;
     (void)sec_h;
         
     tmp_sec = (u64)sec_l * NS_IN_1S;
@@ -39,6 +40,7 @@ sysclock_t lan865x_get_sys_clock(struct lan865x_priv* priv) {
 
 sysclock_t lan865x_get_sys_clock_and_delay(struct lan865x_priv* priv, struct ptp_system_timestamp* res_spi_delay) {
     struct oa_tc6* tc6 = priv->tc6;
+    int ret;
 
     u32 sec_h;
     u32 sec_l;
@@ -46,16 +48,15 @@ sysclock_t lan865x_get_sys_clock_and_delay(struct lan865x_priv* priv, struct ptp
     u64 tmp_sec, clock;
 
     ptp_read_system_prets(res_spi_delay);
-    if (oa_tc6_read_register(tc6, MMS1_MAC_TN, &nsec))
-        return -ENODEV;
-    if (oa_tc6_read_register(tc6, MMS1_MAC_TSL, &sec_l))
-        return -ENODEV;
-    /* NOTE: Linux timespec64 is 64-bit, but we only use 32-bit seconds and nanoseconds */
-    //if (oa_tc6_read_register(tc6, MMS1_MAC_TSH, &sec_h))
-    //    return -ENODEV;
+    if ((ret = oa_tc6_read_register(tc6, MMS1_MAC_TN, &nsec)))
+        return ret;
+    if ((ret = oa_tc6_read_register(tc6, MMS1_MAC_TSL, &sec_l)))
+        return ret;
     ptp_read_system_postts(res_spi_delay);
 
     /* NOTE: Linux timespec64 is 64-bit, but we only use 32-bit seconds and nanoseconds */
+    //if (oa_tc6_read_register(tc6, MMS1_MAC_TSH, &sec_h))
+    //    return ret;
     (void)sec_h;
 
     tmp_sec = (u64)sec_l * NS_IN_1S;
@@ -68,6 +69,7 @@ sysclock_t lan865x_get_sys_clock_and_delay(struct lan865x_priv* priv, struct ptp
 
 int lan865x_set_sys_clock(struct lan865x_priv* priv, u64 timestamp) {
     struct oa_tc6* tc6 = priv->tc6;
+    int ret;
 
     u64 sec = timestamp / NS_IN_1S;
     u32 sec_h = (u32)(sec >> 32) & 0x0000FFFF;
@@ -77,18 +79,19 @@ int lan865x_set_sys_clock(struct lan865x_priv* priv, u64 timestamp) {
     LAN865X_DEBUG("%s: sec_h = %u, sec = %u, nsec = %u\n", __func__, sec_h, sec, nsec);
 
     // Reverse order for lower the error
-    if (oa_tc6_write_register(tc6, MMS1_MAC_TN, nsec))
-        return -ENODEV;
-    if (oa_tc6_write_register(tc6, MMS1_MAC_TSL, sec_l))
-        return -ENODEV;
-    if (oa_tc6_write_register(tc6, MMS1_MAC_TSH, sec_h))
-        return -ENODEV;
+    if ((ret = oa_tc6_write_register(tc6, MMS1_MAC_TN, nsec)))
+        return ret;
+    if ((ret = oa_tc6_write_register(tc6, MMS1_MAC_TSL, sec_l)))
+        return ret;
+    if ((ret = oa_tc6_write_register(tc6, MMS1_MAC_TSH, sec_h)))
+        return ret;
 
     return 0;
 }
 
 int lan865x_set_sys_clock_ti(struct lan865x_priv* priv, u64 subnano_b24) {
     struct oa_tc6* tc6 = priv->tc6;
+    int ret;
     u32 reg_ti_val;
     u32 reg_tisubn_val;
 
@@ -103,16 +106,17 @@ int lan865x_set_sys_clock_ti(struct lan865x_priv* priv, u64 subnano_b24) {
     reg_tisubn_val = ((subnano & 0xFFFF00) >> 8) | ((subnano & 0x0000FF) << 24);
 
     // Set MAC_TI(TSU Timer Increment) register
-    if (oa_tc6_write_register(tc6, MMS1_MAC_TISUBN, reg_tisubn_val))
-        return -ENODEV;
-    if (oa_tc6_write_register(tc6, MMS1_MAC_TI, reg_ti_val))
-        return -ENODEV;
+    if ((ret = oa_tc6_write_register(tc6, MMS1_MAC_TISUBN, reg_tisubn_val)))
+        return ret;
+    if ((ret = oa_tc6_write_register(tc6, MMS1_MAC_TI, reg_ti_val)))
+        return ret;
 
     return 0;
 }
 
 int lan865x_add_sys_clock(struct lan865x_priv* priv, u32 add_offset) {
     struct oa_tc6* tc6 = priv->tc6;
+    int ret;
     u32 reg_val = 0;
 
     add_offset = (add_offset >> 2); // 32bit -> 30bit
@@ -124,14 +128,15 @@ int lan865x_add_sys_clock(struct lan865x_priv* priv, u32 add_offset) {
     reg_val &= ~(1U << 31);
 
     /* Set MAC_TA(TSU Timer Adjust) register */
-    if (oa_tc6_write_register(tc6, MMS1_MAC_TA, reg_val))
-        return -ENODEV;
+    if ((ret = oa_tc6_write_register(tc6, MMS1_MAC_TA, reg_val)))
+        return ret;
 
     return 0;
 }
 
 int lan865x_sub_sys_clock(struct lan865x_priv* priv, u32 sub_offset) {
     struct oa_tc6* tc6 = priv->tc6;
+    int ret;
     u32 reg_val = 0;
 
     /* Bits 29:0 = ITDT */
@@ -141,14 +146,15 @@ int lan865x_sub_sys_clock(struct lan865x_priv* priv, u32 sub_offset) {
     reg_val |= (1U << 31);
 
     /* Set MAC_TA(TSU Timer Adjust) register */
-    if (oa_tc6_write_register(tc6, MMS1_MAC_TA, reg_val))
-        return -ENODEV;
+    if ((ret = oa_tc6_write_register(tc6, MMS1_MAC_TA, reg_val)))
+        return ret;
 
     return 0;
 }
 
 timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id) {
     struct oa_tc6* tc6 = priv->tc6;
+    int ret;
     u32 ts_h = 0, ts_l = 0;
     u64 tmp_sec = 0;
     u64 timestamp = 0;
@@ -167,10 +173,10 @@ timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id) {
     if (tx_id < 0 || tx_id >= ARRAY_SIZE(reg_hi) || !reg_hi[tx_id] || !reg_lo[tx_id])
         return -EINVAL;
 
-    if (oa_tc6_read_register(tc6, reg_hi[tx_id], &ts_h))
-        return -ENODEV;
-    if (oa_tc6_read_register(tc6, reg_lo[tx_id], &ts_l))
-        return -ENODEV;
+    if ((ret = oa_tc6_read_register(tc6, reg_hi[tx_id], &ts_h)))
+        return ret;
+    if ((ret = oa_tc6_read_register(tc6, reg_lo[tx_id], &ts_l)))
+        return ret;
 
     tmp_sec = (u64)ts_h * NS_IN_1S;
     ts_l = ts_l & 0xFFFFFFFF;
@@ -181,20 +187,21 @@ timestamp_t lan865x_read_tx_timestamp(struct lan865x_priv* priv, int tx_id) {
 
 int lan865x_update_tx_packets(struct lan865x_priv* priv) {
     struct oa_tc6* tc6 = priv->tc6;
+    int ret;
     u32 tx_count = 0, total_tx_count = 0;
 
     /* This register gets cleared after read */
-    if (oa_tc6_read_register(tc6, MMS0_STATS12, &tx_count))
-        return -ENODEV;
-    if (oa_tc6_read_register(tc6, MMS0_STATS11, &total_tx_count))
-        return -ENODEV;
+    if ((ret = oa_tc6_read_register(tc6, MMS0_STATS12, &tx_count)))
+        return ret;
+    if ((ret = oa_tc6_read_register(tc6, MMS0_STATS11, &total_tx_count)))
+        return ret;
 
     priv->total_tx_count += tx_count;
     if ((total_tx_count - tx_count) > 0) {
         priv->total_tx_drop_count += (total_tx_count - tx_count);
     }
 
-    return 0;
+    return ret;
 }
 
 u64 lan865x_get_tx_packets(struct lan865x_priv* priv) {

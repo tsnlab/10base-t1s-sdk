@@ -565,8 +565,9 @@ static int lan865x_probe(struct spi_device *spi)
     /* Get lan8651 phy irq from platform device*/
     lan8651_phy_irq = platform_get_irq(to_platform_device(&spi->dev), 0 /* TODO Macro */);
     if (lan8651_phy_irq < 0) {
-        dev_err(&spi->dev, "Failed to get IRQ: %d\n", lan8651_phy_irq);
-        return -EFAULT;
+        ret = lan8651_phy_irq;
+        dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
+        return ret;
     }
 #elif defined(CONFIG_RPI5)
     /* Get lan8651 phy irq from device tree*/
@@ -574,12 +575,13 @@ static int lan865x_probe(struct spi_device *spi)
     if (IS_ERR(lan8651_phy_irq_gpiod)) {
         ret = PTR_ERR(lan8651_phy_irq_gpiod);
         dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
-        return -EFAULT;
+        return ret;
     }
     lan8651_phy_irq = gpiod_to_irq(lan8651_phy_irq_gpiod);
     if (lan8651_phy_irq < 0) {
-        dev_err(&spi->dev, "Failed to get IRQ: %d\n", lan8651_phy_irq);
-        return -EFAULT;
+        ret = lan8651_phy_irq;
+        dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
+        return ret;
     }
 #endif
 
