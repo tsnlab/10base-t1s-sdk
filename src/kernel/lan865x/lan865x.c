@@ -50,6 +50,8 @@
 
 #define LAN865X_REG_PLCA_CTRL1    0x0004ca02
 
+#define LAN865X_IRQ_DTS_IDX  0
+
 #define LAN8650_NODE_MAX_COUNT 8
 #define NODE_ID_BITS_WIDTH 8
 #define NODE_ID_MASK 0xFF
@@ -563,7 +565,7 @@ static int lan865x_probe(struct spi_device *spi)
     (void)lan8651_phy_irq_gpiod;
 
     /* Get lan8651 phy irq from platform device*/
-    lan8651_phy_irq = platform_get_irq(to_platform_device(&spi->dev), 0 /* TODO Macro */);
+    lan8651_phy_irq = platform_get_irq(to_platform_device(&spi->dev), LAN865X_IRQ_DTS_IDX);
     if (lan8651_phy_irq < 0) {
         ret = lan8651_phy_irq;
         dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
