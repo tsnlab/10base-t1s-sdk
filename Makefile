@@ -69,14 +69,8 @@ DRIVER_INCLUDES := -I$(CURDIR)/$(INCLUDE_DIR) \
                   -I$(KERNEL_DIR)/drivers/net/phy \
                   -I$(KERNEL_DIR)/drivers/spi
 
-# RPi5-specific optimizations
-ifeq ($(BOARD),rpi5)
-    DRIVER_INCLUDES += -I$(KERNEL_DIR)/arch/arm64/include
-    EXTRA_CFLAGS += -march=armv8.2-a+crc+simd -mtune=cortex-a76
-endif
-
-# Enable default compile flags
-EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE -DDEBUG -D__LAN865X_DEBUG__
+# Common compile flags
+EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE #-DDEBUG -D__LAN865X_DEBUG__
 
 # ========================
 #  Build Targets
