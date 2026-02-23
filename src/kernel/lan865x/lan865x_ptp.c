@@ -182,14 +182,11 @@ static int lan865x_ptp_gettimex64(struct ptp_clock_info* ptp_info, struct timesp
     struct lan865x_priv* priv = get_lan865x_priv_by_ptp_info(ptp_info);
     struct ptp_device* ptpdev = priv->ptpdev;
 
-    spin_lock_irqsave(&ptpdev->lock, flags);
+    mutex_lock(&ptpdev->lock);
+    timestamp = lan865x_get_sys_clock_and_delay(priv, sts);
+    mutex_unlock(&ptpdev->lock);
 
-    ptp_read_system_prets(sts);
-    timestamp = lan865x_get_sys_clock(priv);
-    ptp_read_system_postts(sts);
-
-    res_ts->tv_sec = timestamp / NS_IN_1S;
-    res_ts->tv_nsec = timestamp % NS_IN_1S;
+    *res_ts = ns_to_timespec64(timestamp);
 
    /*
     * NOTE:
