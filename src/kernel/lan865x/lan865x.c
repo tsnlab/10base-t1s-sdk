@@ -602,6 +602,9 @@ static int lan865x_probe(struct spi_device *spi)
     priv->netdev = netdev;
     priv->spi = spi;
 
+    spi_set_drvdata(spi, priv);
+    INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
+
     /* Initialize oa_tc6 and lan8651*/
     priv->tc6 = oa_tc6_init(spi, netdev);
     g_tc6 = priv->tc6;
@@ -609,9 +612,6 @@ static int lan865x_probe(struct spi_device *spi)
         dev_err(&spi->dev, "oa_tc6_init failed\n");
         goto oa_tc6_init_error;
     }
-
-    spi_set_drvdata(spi, priv);
-    INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
 
     /* Create sysfs device */
     ret = lan865x_sysfs_create_device(priv);
