@@ -641,10 +641,17 @@ static int oa_tc6_read_status0(struct oa_tc6 *tc6)
 
 static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 {
+#if defined(CONFIG_RPI4)
 	u32 regval = RESET_SWRESET;
 	int ret;
+#elif defined(CONFIG_RPI5)
+	u32 regval;
+	int ret;
 
-	pr_info("oa_tc6_sw_reset_macphy: starting soft reset\n");
+	oa_tc6_read_register(tc6, OA_TC6_REG_STATUS0, &regval);
+	pr_info("oa_tc6_sw_reset_macphy: STATUS0=0x%08x\n", regval);
+	regval = RESET_SWRESET;
+#endif /* CONFIG_RPI4 or CONFIG_RPI5 */
 
 	ret = oa_tc6_write_register(tc6, OA_TC6_REG_RESET, regval);
 	if (ret) {
@@ -1694,8 +1701,6 @@ struct oa_tc6 *oa_tc6_init(struct spi_device *spi, struct net_device *netdev)
 	/* Set the SPI controller to pump at realtime priority */
 	tc6->spi->rt = true;
 	spi_setup(tc6->spi);
-
-	pr_info("lan865x: requesting IRQ %d\n", tc6->spi->irq);
 
 	tc6->spi_ctrl_tx_buf = devm_kzalloc(
 		&tc6->spi->dev, OA_TC6_CTRL_SPI_BUF_SIZE, GFP_KERNEL);

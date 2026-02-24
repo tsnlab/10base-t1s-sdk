@@ -6,6 +6,7 @@
  */
 
 #include <linux/device.h>
+#include <linux/platform_device.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/miscdevice.h>
@@ -49,16 +50,14 @@
 
 #define LAN865X_REG_PLCA_CTRL1    0x0004ca02
 
+#define LAN865X_IRQ_DTS_IDX  0
+
 #define LAN8650_NODE_MAX_COUNT 8
 #define NODE_ID_BITS_WIDTH 8
 #define NODE_ID_MASK 0xFF
 #define REGISTER_MAC_MASK 0xffffffff
 #define MAC_ADDR_LENGTH 6
 #define NUM_OF_BITS_IN_BYTE 8
-
-/* GPIO fallback (if not DT-provided) */
-#define LAN865X_RESET_GPIO    22
-#define LAN865X_IRQ_GPIO      23
 
 static struct oa_tc6* g_tc6;
 
@@ -558,23 +557,42 @@ static int lan865x_probe(struct spi_device *spi)
 {
     struct net_device *netdev;
     struct lan865x_priv *priv;
+    struct gpio_desc* lan8651_phy_irq_gpiod;
+    int lan8651_phy_irq;
     int ret;
 
+#if defined(CONFIG_RPI4)
+    (void)lan8651_phy_irq_gpiod;
+
+    /* Get lan8651 phy irq from platform device*/
+    lan8651_phy_irq = platform_get_irq(to_platform_device(&spi->dev), LAN865X_IRQ_DTS_IDX);
+    if (lan8651_phy_irq < 0) {
+        ret = lan8651_phy_irq;
+        dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
+        return ret;
+    }
+#elif defined(CONFIG_RPI5)
+    /* Get lan8651 phy irq from device tree*/
+    lan8651_phy_irq_gpiod = devm_gpiod_get(&spi->dev, "lan8651irq", GPIOD_IN);
+    if (IS_ERR(lan8651_phy_irq_gpiod)) {
+        ret = PTR_ERR(lan8651_phy_irq_gpiod);
+        dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
+        return ret;
+    }
+    lan8651_phy_irq = gpiod_to_irq(lan8651_phy_irq_gpiod);
+    if (lan8651_phy_irq < 0) {
+        ret = lan8651_phy_irq;
+        dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
+        return ret;
+    }
+#endif
+
+    /* Set spi mode */
     spi->mode = SPI_MODE_3;
     spi->mode &= ~SPI_CS_HIGH;
     spi->bits_per_word = 8;
     spi->max_speed_hz = 25000000;
-
-    ret = spi_setup(spi);
-    if (ret) {
-        dev_err(&spi->dev, "spi_setup failed: %d\n", ret);
-        return ret;
-    }
-
-    dev_info(&spi->dev,
-        ">>> probe start (bus=%d, cs=%u, max_hz=%d, mode=%d)\n",
-        spi->controller->bus_num, (unsigned int) spi->chip_select,
-        spi->max_speed_hz, spi->mode);
+    spi->irq = lan8651_phy_irq;
 
     netdev = alloc_etherdev(sizeof(*priv));
     if (!netdev)
@@ -583,15 +601,18 @@ static int lan865x_probe(struct spi_device *spi)
     priv = netdev_priv(netdev);
     priv->netdev = netdev;
     priv->spi = spi;
+
     spi_set_drvdata(spi, priv);
     INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
 
+    /* Initialize oa_tc6 and lan8651*/
     priv->tc6 = oa_tc6_init(spi, netdev);
     g_tc6 = priv->tc6;
     if (!priv->tc6) {
         dev_err(&spi->dev, "oa_tc6_init failed\n");
         goto oa_tc6_init_error;
     }
+
     /* Create sysfs device */
     ret = lan865x_sysfs_create_device(priv);
     if (ret) {
@@ -752,7 +773,7 @@ static const struct spi_device_id lan865x_ids[] = {
     { "lan8650", 0 },
     { "lan8651", 0 },
     { "spidev",  0 },
-    { }
+    { },
 };
 MODULE_DEVICE_TABLE(spi, lan865x_ids);
 

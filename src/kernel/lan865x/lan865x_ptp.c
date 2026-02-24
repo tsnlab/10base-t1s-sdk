@@ -13,6 +13,7 @@
 #include <linux/delay.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
+#include <linux/mutex.h>
 
 #define NSEC_PER_MHZ 1000
 #define MHZ_TO_NS(mhz) (NSEC_PER_MHZ / (mhz))
@@ -27,8 +28,6 @@ struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_inf
 }
 
 static int lan865x_ptp_thread_handler(void* data) {
-    unsigned long flags;
-
     struct ptp_device* ptpdev = (struct ptp_device*)data;
     struct lan865x_priv* priv = dev_get_drvdata(ptpdev->dev);
     u32 status;
@@ -49,22 +48,22 @@ static int lan865x_ptp_thread_handler(void* data) {
 
             skb_hwts.hwtstamp = ns_to_ktime(tx_ts);
             LAN865X_DEBUG("%s: tx_ts = %llu, skb_hwts.hwtstamp = %llu\n", __func__, tx_ts, skb_hwts.hwtstamp);
-            spin_lock_irqsave(&ptpdev->lock, flags);
+            mutex_lock(&ptpdev->lock);
             skb_tstamp_tx(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP], &skb_hwts);
             kfree_skb(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP]);
-            spin_unlock_irqrestore(&ptpdev->lock, flags);
+            mutex_unlock(&ptpdev->lock);
         }
         // NORMAL
         if (status & TS_B_MASK) {
             tx_ts = lan865x_read_tx_timestamp(priv, 2);
             LAN865X_DEBUG("%s: B Timestamp = %llu.%llu\n", __func__, tx_ts / NS_IN_1S, tx_ts % NS_IN_1S);
 
-            skb_hwts.hwtstamp = ns_to_ktime(tx_ts);
+            skb_hwts.hwtstamp = ns_to_ktime(tx_ts); 
             LAN865X_DEBUG("%s: tx_ts = %llu, skb_hwts.hwtstamp = %llu\n", __func__, tx_ts, skb_hwts.hwtstamp);
-            spin_lock_irqsave(&ptpdev->lock, flags);
+            mutex_lock(&ptpdev->lock);
             skb_tstamp_tx(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL], &skb_hwts);
             kfree_skb(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL]);
-            spin_unlock_irqrestore(&ptpdev->lock, flags);
+            mutex_unlock(&ptpdev->lock);
         }
         // RESERVED
         if (status & TS_C_MASK) {
@@ -101,7 +100,6 @@ bool is_gptp_packet(const struct sk_buff* skb) {
 
 static int lan865x_ptp_adjfine(struct ptp_clock_info* ptp_info, long scaled_ppm) {
     u64 ticks_scale, diff_b24;
-    unsigned long flags;
     u32 ppm;
     int is_negative = 0;
 
@@ -110,7 +108,7 @@ static int lan865x_ptp_adjfine(struct ptp_clock_info* ptp_info, long scaled_ppm)
 
     LAN865X_DEBUG("lan865x: call %s", __func__);
 
-    spin_lock_irqsave(&ptpdev->lock, flags);
+    mutex_lock(&ptpdev->lock);
 
     if (scaled_ppm == 0) {
         goto exit;
@@ -133,14 +131,12 @@ static int lan865x_ptp_adjfine(struct ptp_clock_info* ptp_info, long scaled_ppm)
                   ticks_scale, ticks_scale);
 
 exit:
-    spin_unlock_irqrestore(&ptpdev->lock, flags);
+    mutex_unlock(&ptpdev->lock);
 
     return 0;
 }
 
 static int lan865x_ptp_adjtime(struct ptp_clock_info* ptp_info, s64 delta_ns) {
-    unsigned long flags;
-
     struct lan865x_priv* priv = get_lan865x_priv_by_ptp_info(ptp_info);
     struct ptp_device* ptpdev = priv->ptpdev;
 
@@ -150,7 +146,7 @@ static int lan865x_ptp_adjtime(struct ptp_clock_info* ptp_info, s64 delta_ns) {
 
     LAN865X_DEBUG("lan865x: call %s\n", __func__);
 
-    spin_lock_irqsave(&ptpdev->lock, flags);
+    mutex_lock(&ptpdev->lock);
 
     if (delta_ns == 0) {
         goto exit;
@@ -172,7 +168,7 @@ static int lan865x_ptp_adjtime(struct ptp_clock_info* ptp_info, s64 delta_ns) {
                   curr_hw_timestamp);
 
 exit:
-    spin_unlock_irqrestore(&ptpdev->lock, flags);
+    mutex_unlock(&ptpdev->lock);
 
     return 0;
 }
@@ -180,23 +176,19 @@ exit:
 static int lan865x_ptp_gettimex64(struct ptp_clock_info* ptp_info, struct timespec64* res_ts,
                                   struct ptp_system_timestamp* sts) {
     u64 timestamp;
-    unsigned long flags;
 
     LAN865X_DEBUG("lan865x: call %s", __func__);
 
     struct lan865x_priv* priv = get_lan865x_priv_by_ptp_info(ptp_info);
     struct ptp_device* ptpdev = priv->ptpdev;
 
-    spin_lock_irqsave(&ptpdev->lock, flags);
+    mutex_lock(&ptpdev->lock);
+    timestamp = lan865x_get_sys_clock_and_delay(priv, sts);
+    mutex_unlock(&ptpdev->lock);
 
-    ptp_read_system_prets(sts);
-    timestamp = lan865x_get_sys_clock(priv);
-    ptp_read_system_postts(sts);
+    *res_ts = ns_to_timespec64(timestamp);
 
-    res_ts->tv_sec = timestamp / NS_IN_1S;
-    res_ts->tv_nsec = timestamp % NS_IN_1S;
-
-    /*
+   /*
     * NOTE:
     * Since the LAN865x device communicates over SPI, consecutive register accesses
     * without sufficient delay can cause SPI buffering and transaction backlog.
@@ -210,22 +202,19 @@ static int lan865x_ptp_gettimex64(struct ptp_clock_info* ptp_info, struct timesp
 
     LAN865X_DEBUG("%s: timestamp = %llu, res_ts = %llu.%llu\n", __func__, timestamp, res_ts->tv_sec, res_ts->tv_nsec);
 
-    spin_unlock_irqrestore(&ptpdev->lock, flags);
-
     return 0;
 }
 
 static int lan865x_ptp_settime64(struct ptp_clock_info* ptp_info, const struct timespec64* set_ts) {
     (void)set_ts;
     u64 host_timestamp;
-    unsigned long flags;
 
     struct lan865x_priv* priv = get_lan865x_priv_by_ptp_info(ptp_info);
     struct ptp_device* ptpdev = priv->ptpdev;
 
     LAN865X_DEBUG("lan865x: call %s", __func__);
 
-    spin_lock_irqsave(&ptpdev->lock, flags);
+    mutex_lock(&ptpdev->lock);
 
     /* Get host timestamp */
     host_timestamp = (u64)set_ts->tv_sec * NS_IN_1S + set_ts->tv_nsec;
@@ -233,7 +222,7 @@ static int lan865x_ptp_settime64(struct ptp_clock_info* ptp_info, const struct t
     // TODO add/sub
     lan865x_set_sys_clock(priv, host_timestamp);
 
-    spin_unlock_irqrestore(&ptpdev->lock, flags);
+    mutex_unlock(&ptpdev->lock);
 
     return 0;
 }
@@ -259,7 +248,7 @@ struct ptp_device* ptp_device_init(struct device* dev, struct oa_tc6* tc6, s32 m
         .settime64 = lan865x_ptp_settime64,
     };
 
-    spin_lock_init(&ptpdev->lock);
+    mutex_init(&ptpdev->lock);
 
     ptpdev->dev = dev;
     ptpdev->tc6 = tc6;

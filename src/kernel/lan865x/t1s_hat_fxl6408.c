@@ -115,7 +115,7 @@ static int get_nodeid(void* data) {
         /* If button is pressed, set node_id to LAN8650 */
         if (val & FXL6408_BUTTON_INPUT_MASK) {
             priv->node_id = (val & 0xF0) >> 4;
-            pr_debug ("t1s_hat_fxl6408: node_id = 0x%02x\n", priv->node_id);
+            pr_debug("t1s_hat_fxl6408: node_id = 0x%02x\n", priv->node_id);
             lan865x_set_nodeid(priv, priv->node_id);
         }
 
@@ -124,7 +124,7 @@ static int get_nodeid(void* data) {
     return 0;
 }
 
-static irqreturn_t nodeid_threaded_irq(int irq, void* data) {
+static irqreturn_t t1s_hat_fxl6408_isr(int irq, void* data) {
     struct lan865x_priv* priv = (struct lan865x_priv*)data;
 
     if (atomic_cmpxchg(&nodeid_irq_flag, 0, 1) == 0) {
@@ -164,8 +164,8 @@ static void init_registers(struct lan865x_priv* priv) {
 }
 
 static int init_interrupt(struct lan865x_priv* priv, struct device* dev) {
-    struct gpio_desc* gpiod;
-    int irq;
+    struct gpio_desc* fxl6408_irq_gpiod;
+    int fxl6408_i2c_irq;
     int ret;
 
     /* Check if device tree node exists */
@@ -173,37 +173,35 @@ static int init_interrupt(struct lan865x_priv* priv, struct device* dev) {
         pr_err("t1s_hat_fxl6408: device does not have device tree node\n");
         return -ENODEV;
     }
-
-    pr_info("t1s_hat_fxl6408: device tree node exists: %pOF\n", dev->of_node);
-
-    /* nodeid-gpios */
-    gpiod = devm_gpiod_get(dev, "nodeid", GPIOD_IN);
-    if (IS_ERR(gpiod)) {
-        ret = PTR_ERR(gpiod);
-        pr_err("t1s_hat_fxl6408: failed to get nodeid GPIO (ret=%d, ENOENT=%d)\n", 
+    
+    /* Get fxl6408 irq from device tree*/
+    fxl6408_irq_gpiod = devm_gpiod_get(dev, "fxl6408irq", GPIOD_IN);
+    if (IS_ERR(fxl6408_irq_gpiod)) {
+        ret = PTR_ERR(fxl6408_irq_gpiod);
+        pr_err("t1s_hat_fxl6408: failed to get fxl6408irq GPIO (ret=%d, ENOENT=%d)\n", 
                ret, -ENOENT);
         if (ret == -ENOENT) {
-            pr_err("t1s_hat_fxl6408: nodeid-gpios property not found in device tree\n");
+            pr_err("t1s_hat_fxl6408: fxl6408irq-gpios property not found in device tree\n");
             pr_err("t1s_hat_fxl6408: device tree node: %pOF\n", dev->of_node);
         }
         return ret;
     }
 
-    irq = gpiod_to_irq(gpiod);
-    if (irq < 0) {
+    fxl6408_i2c_irq = gpiod_to_irq(fxl6408_irq_gpiod);
+    if (fxl6408_i2c_irq < 0) {
         pr_warn("t1s_hat_fxl6408: failed to get IRQ number\n");
-        return irq;
+        return fxl6408_i2c_irq;
     }
 
-    ret = devm_request_threaded_irq(dev, irq, NULL, nodeid_threaded_irq, IRQF_TRIGGER_LOW | IRQF_ONESHOT,
-                                    "t1s_hat_fxl6408_irq", priv);
+    ret = devm_request_threaded_irq(dev, fxl6408_i2c_irq, NULL, t1s_hat_fxl6408_isr, IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+                                    "t1s_hat_fxl6408_isr", priv);
 
     if (ret < 0) {
         pr_warn("t1s_hat_fxl6408: failed to allocate IRQ\n");
         return ret;
     }
 
-    pr_info("t1s_hat_fxl6408: irq=%d\n", irq);
+    pr_info("t1s_hat_fxl6408: irq=%d\n", fxl6408_i2c_irq);
     return 0;
 }
 
@@ -222,19 +220,23 @@ int t1s_hat_fxl6408_init(struct lan865x_priv* priv, struct device* dev) {
 
     adapter = i2c_get_adapter(I2C_BUS_ADDRESS);
     if (adapter == NULL) {
-        pr_warn("t1s_hat_fxl6408: failed to get i2c adapter\n");
+        pr_err("t1s_hat_fxl6408: failed to get i2c adapter\n");
         return -1;
     }
 
     priv->fxl6408_client = i2c_new_client_device(adapter, &fxl6408_info);
     i2c_put_adapter(adapter);
     if (priv->fxl6408_client == NULL) {
-        pr_warn("t1s_hat_fxl6408: failed to create i2c device\n");
+        pr_err("t1s_hat_fxl6408: failed to create i2c device\n");
         return -1;
     }
 
     init_registers(priv);
     ret = init_interrupt(priv, dev);
+    if (ret < 0) {
+        pr_err("t1s_hat_fxl6408: failed to initialize interrupt\n");
+        return -1;
+    }
     nodeid_thread = kthread_run(get_nodeid, priv, "t1s_hat_fxl6408_thread");
     wake_up_process(nodeid_thread);
 
@@ -250,13 +252,14 @@ void t1s_hat_fxl6408_exit(struct lan865x_priv* priv) {
         return;
     }
 
-    if (priv->fxl6408_client) {
-        i2c_unregister_device(priv->fxl6408_client);
-        priv->fxl6408_client = NULL;
-    }
     if (nodeid_thread) {
         kthread_stop(nodeid_thread);
         nodeid_thread = NULL;
     }
     up(&nodeid_irq_sem);
+
+    if (priv->fxl6408_client) {
+        i2c_unregister_device(priv->fxl6408_client);
+        priv->fxl6408_client = NULL;
+    }
 }

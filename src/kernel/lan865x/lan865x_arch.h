@@ -82,7 +82,7 @@ struct ptp_device {
     u32 ti_subnano_b24; // timer increase every clock (25MHz) cycle
     u64 offset;
 
-    spinlock_t lock;
+    struct mutex lock;
 };
 
 struct lan865x_priv {
@@ -109,6 +109,7 @@ struct lan865x_priv {
 struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_info);
 
 sysclock_t lan865x_get_sys_clock(struct lan865x_priv* priv);
+sysclock_t lan865x_get_sys_clock_and_delay(struct lan865x_priv* priv, struct ptp_system_timestamp* res_spi_delay);
 int lan865x_set_sys_clock(struct lan865x_priv* priv, u64 timestamp);
 u32 lan865x_get_cycle_1s(void);
 int lan865x_set_sys_clock_ti(struct lan865x_priv* priv, u64 subnano_b24);

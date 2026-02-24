@@ -1,0 +1,23 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2712";
+
+    fragment@0 {
+        target = <&spi0>;
+        __overlay__ {
+            #address-cells = <1>;
+            #size-cells = <0>;
+            status = "okay";
+
+            lan8650: ethernet@0 {
+                compatible = "microchip,lan8651", "microchip,lan8650";
+                reg = <0>;  /* CE0 */
+
+                lan8651irq-gpios = <&gpio 23 1>; /* GPIO_ACTIVE_LOW */
+                fxl6408irq-gpios = <&gpio 24 1>; /* GPIO_ACTIVE_LOW */
+            };
+        };
+    };
+};

@@ -15,13 +15,19 @@ ifeq ($(BOARD),rpi5)
 	KERNEL_DIR := $(RPI5_KERNEL_DIR)
     TOOLCHAIN := $(shell which $(CROSS_COMPILE)gcc)
     EXTRA_CFLAGS += -DCONFIG_RPI5=1
-else
+else ifeq ($(BOARD),rpi4)
     # Default: RPi4
     ARCH := arm64
     CROSS_COMPILE := aarch64-linux-gnu-
 	KERNEL_DIR := $(RPI4_KERNEL_DIR)
     TOOLCHAIN := $(shell which $(CROSS_COMPILE)gcc)
-    EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE # -DDEBUG -D__LAN865X_DEBUG__
+    EXTRA_CFLAGS += -DCONFIG_RPI4=1
+else
+    $(error Unsupported board: $(BOARD))
+	$(error Only rpi4 and rpi5 are supported)
+	$(error Please set BOARD=rpi4 or BOARD=rpi5)
+	$(error Makefile:$(LINENO): $(error Unsupported board: $(BOARD)))
+	exit 1
 endif
 
 # ========================
@@ -63,11 +69,8 @@ DRIVER_INCLUDES := -I$(CURDIR)/$(INCLUDE_DIR) \
                   -I$(KERNEL_DIR)/drivers/net/phy \
                   -I$(KERNEL_DIR)/drivers/spi
 
-# RPi5-specific optimizations
-ifeq ($(BOARD),rpi5)
-    DRIVER_INCLUDES += -I$(KERNEL_DIR)/arch/arm64/include
-    EXTRA_CFLAGS += -march=armv8.2-a+crc+simd -mtune=cortex-a76
-endif
+# Common compile flags
+EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE #-DDEBUG -D__LAN865X_DEBUG__
 
 # ========================
 #  Build Targets
@@ -99,7 +102,8 @@ endif
 		exit 1; \
 	}
 
-$(BUILD_DIR)/Makefile:
+# FORCE ensures build/Makefile is always regenerated with current BOARD config
+$(BUILD_DIR)/Makefile: FORCE
 	@mkdir -p $(BUILD_DIR)
 	@echo "obj-m := $(DRIVER_NAME).o" > $@
 	@echo "$(DRIVER_NAME)-y :=\
@@ -127,4 +131,4 @@ clean:
 	       src/kernel/lan865x/*.o src/kernel/lan865x/*.o.cmd src/kernel/lan865x/*.o.d \
 	       src/kernel/lan865x/.tmp_versions
 
-.PHONY: all clean print_config
+.PHONY: all clean print_config FORCE

@@ -1,4 +1,4 @@
-# README – 10Base-t1s Raspberry Linux Module Driver
+# 10Base-T1S Raspberry Linux Module Driver
 
 This document describes how to build and deploy the Microchip LAN865x 10BASE-T1S MAC-PHY driver on Raspberry Pi (RPi4 / RPi5).
 
@@ -88,11 +88,11 @@ A sample overlay source is provided: lan8650-overlay.dts
 
 Compile overlay device tree
 ```bash
-$ dtc -@ -I dts -O dtb -o lan8650.dtbo lan8650-overlay.dts
-```
-or
-```bash
-$ source tools/dts-scripts.sh
+# rpi4
+$ dtc -@ -I dts -O dtb -o lan8650.dtbo lan8650-overlay-rpi4.dts
+
+# rpi5
+$ dtc -@ -I dts -O dtb -o lan8650.dtbo lan8650-overlay-rpi5.dts
 ```
 
 Deploy overlay
@@ -123,28 +123,12 @@ Set the overlay device tree
 dtoverlay=lan8650
 ```
 
-Load i2c drivers
-```bash
-$ sudo nano /etc/modules
-```
-
-Add i2c drivers
-```bash
-# /etc/modules: kernel modules to load at boot time.
-#
-# This file contains the names of kernel modules that should be loaded
-# at boot time, one per line. Lines beginning with "#" are ignored.
-# Parameters can be specified after the module name.
-i2c-dev
-i2c-bcm2835
-i2c-brcmstb
-```
-
 Reboot:
 ```bash
 $ sudo reboot
 ```
 
+<!--
 Check device environment
 
 spi device info
@@ -167,6 +151,7 @@ i2c-21  unknown         fef09500.i2c                            N/A
 $ sudo i2cget -y 1 0x43 0x0f
 <pin node_id>
 ```
+-->
 
 # 5. Clean
 
