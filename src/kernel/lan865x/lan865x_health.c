@@ -324,11 +324,14 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
     host = priv->netdev->stats.tx_packets - priv->replay_host_base;
     chip = priv->hwstats[LAN865X_HW_FTX] - priv->replay_chip_base;
     att = priv->hwstats[LAN865X_HW_TFTX] - priv->replay_att_base;
-    /* FTX (sent OK) can never exceed what the host handed over.  TFTX
-     * ("attempted, incl. errors") might count each of up to 16 attempts
-     * (TODO(spec): per frame or per attempt is not stated), hence x16.
+    /* Neither FTX (sent OK) nor TFTX (attempted, incl. errors) can exceed
+     * what the host handed over.  TFTX counts frames, not attempts:
+     * measured on the lab LAN8651, TFTX == FTX with 629 PHY collisions on
+     * the line (3-node CSMA), and TFTX - FTX == XCOL + TXAIE + TXFUR.  In
+     * the PLCA ID >= node count stall TFTX ran ahead of tx_packets
+     * (95 vs 56) before TXNER: the chip re-sending old frames.
      */
-    if (replay_slack && (chip > host + replay_slack || att > 16 * (host + replay_slack))) {
+    if (replay_slack && (chip > host + replay_slack || att > host + replay_slack)) {
         netdev_err(priv->netdev, "chip transmitted %llu frames OK / %llu attempted, host handed over %llu\n", chip,
                    att, host);
         priv->hwstats[LAN865X_SW_REPLAY_DETECTED]++;
