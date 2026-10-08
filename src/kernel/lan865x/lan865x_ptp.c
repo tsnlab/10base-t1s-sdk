@@ -32,11 +32,17 @@
  * missed (TTSCMx, 11.1.7) or ptp_ts_timeout_ms passed, and clears only the
  * bits it handled.
  */
-static unsigned int ptp_poll_us = 100;
+#ifndef LAN865X_DEF_PTP_POLL_US
+#define LAN865X_DEF_PTP_POLL_US 100
+#endif
+static unsigned int ptp_poll_us = LAN865X_DEF_PTP_POLL_US;
 module_param(ptp_poll_us, uint, 0644);
 MODULE_PARM_DESC(ptp_poll_us, "TX timestamp poll interval in us while a timestamp is outstanding (default 100)");
 
-static unsigned int ptp_ts_timeout_ms = 200;
+#ifndef LAN865X_DEF_PTP_TS_TIMEOUT_MS
+#define LAN865X_DEF_PTP_TS_TIMEOUT_MS 200
+#endif
+static unsigned int ptp_ts_timeout_ms = LAN865X_DEF_PTP_TS_TIMEOUT_MS;
 module_param(ptp_ts_timeout_ms, uint, 0644);
 MODULE_PARM_DESC(ptp_ts_timeout_ms, "Give up on a TX timestamp after this many ms (default 200)");
 

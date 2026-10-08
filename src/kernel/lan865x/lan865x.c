@@ -135,7 +135,10 @@ static int lan865x_set_hw_macaddr_low_bytes(struct oa_tc6 *tc6, const u8 *mac)
  * TODO(spec): the data sheet does not say when the PRBS samples SAB1;
  * lan865x_reload_backoff_seed() toggles MAC_NCR.TXEN to be safe.
  */
-static unsigned int backoff_seed = 1;
+#ifndef LAN865X_DEF_BACKOFF_SEED
+#define LAN865X_DEF_BACKOFF_SEED 1
+#endif
+static unsigned int backoff_seed = LAN865X_DEF_BACKOFF_SEED;
 module_param(backoff_seed, uint, 0444);
 MODULE_PARM_DESC(backoff_seed, "1 = per-node CSMA back-off seed in MAC_SAB1, MAC filter in SA2 (default); 0 = SDK behaviour");
 

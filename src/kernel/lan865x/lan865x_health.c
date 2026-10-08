@@ -31,7 +31,10 @@
 /* MMS4 STS1 (0x0018), RC event bits (11.5) */
 #define LAN865X_MMS4_STS1 0x00040018
 
-static unsigned int stats_ms = 100;
+#ifndef LAN865X_DEF_STATS_MS
+#define LAN865X_DEF_STATS_MS 100
+#endif
+static unsigned int stats_ms = LAN865X_DEF_STATS_MS;
 module_param(stats_ms, uint, 0444);
 MODULE_PARM_DESC(stats_ms, "MAC/PHY statistics poll period in ms (default 100, 0 = off)");
 
@@ -213,15 +216,24 @@ static void lan865x_poll_hw_stats(struct lan865x_priv* priv) {
  * exponential back-off (1 s .. 30 s).  The PTP hardware clock restarts
  * from 0 after a reset.
  */
-static unsigned int tx_stall_ms = 2000;
+#ifndef LAN865X_DEF_TX_STALL_MS
+#define LAN865X_DEF_TX_STALL_MS 2000
+#endif
+static unsigned int tx_stall_ms = LAN865X_DEF_TX_STALL_MS;
 module_param(tx_stall_ms, uint, 0644);
 MODULE_PARM_DESC(tx_stall_ms, "TX stall detection time in ms (also the netdev watchdog timeout), default 2000");
 
-static unsigned int recovery_mode = 2;
+#ifndef LAN865X_DEF_RECOVERY_MODE
+#define LAN865X_DEF_RECOVERY_MODE 2
+#endif
+static unsigned int recovery_mode = LAN865X_DEF_RECOVERY_MODE;
 module_param(recovery_mode, uint, 0644);
 MODULE_PARM_DESC(recovery_mode, "TX stall/fatal error recovery: 0 = log only, 1 = TXEN toggle then reset, 2 = reset (default)");
 
-static unsigned int replay_slack = 64;
+#ifndef LAN865X_DEF_REPLAY_SLACK
+#define LAN865X_DEF_REPLAY_SLACK 64
+#endif
+static unsigned int replay_slack = LAN865X_DEF_REPLAY_SLACK;
 module_param(replay_slack, uint, 0644);
 MODULE_PARM_DESC(replay_slack, "Replay detection: chip FTX may exceed host TX frames by this much (0 = off), default 64");
 
@@ -504,7 +516,10 @@ out:
  *                consecutive polls.  While PLCA is lost and before the
  *                next poll (<= stats_ms) collisions go undetected.
  */
-static unsigned int cden_mode = 2;
+#ifndef LAN865X_DEF_CDEN_MODE
+#define LAN865X_DEF_CDEN_MODE 2
+#endif
+static unsigned int cden_mode = LAN865X_DEF_CDEN_MODE;
 module_param(cden_mode, uint, 0644);
 MODULE_PARM_DESC(cden_mode, "Collision detect: 0 = always on (SDK), 1 = off while PLCA enabled, 2 = off while PLCA enabled and PST=1 (default)");
 

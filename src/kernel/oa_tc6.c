@@ -735,7 +735,10 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
  * footer EXST bit and assert IRQ_N.  err_irq=0 keeps the SDK behaviour up to
  * dbaae29b (all error sources masked; errors pass silently).
  */
-static bool err_irq = true;
+#ifndef LAN865X_DEF_ERR_IRQ
+#define LAN865X_DEF_ERR_IRQ true
+#endif
+static bool err_irq = LAN865X_DEF_ERR_IRQ;
 module_param(err_irq, bool, 0444);
 MODULE_PARM_DESC(err_irq, "Unmask MAC-PHY error interrupts (OA_IMASK0/1), default 1");
 
