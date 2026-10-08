@@ -110,11 +110,97 @@ static int lan865x_set_hw_macaddr_low_bytes(struct oa_tc6 *tc6, const u8 *mac)
     return oa_tc6_write_register(tc6, LAN865X_REG_MAC_L_SADDR1, regval);
 }
 
+/* CSMA/CD back-off seed.
+ *
+ * DS60001734F 6.4.3 (MAC Transmit Block): "The back off time is based on a
+ * pseudo random binary sequence (PRBS) generator seeded from the least
+ * significant 32 bits of the MAC address as configured in the Specific
+ * Address Bottom 1 (MAC_SAB1) register."  Note: "The Specific Address
+ * Bottom 1 register should be uniquely configured for proper CSMA/CD
+ * operation. ... two nodes may collide and retry at the exact same time if
+ * [it] is not configured or configured identically. This may result in
+ * frames being dropped due to excessive collisions."
+ *
+ * The SDK MAC is the build-time MACADDR (default d0:d1:95:30:23:00) with
+ * the DIP node ID in the low nibble of byte 5 only, so MAC_SAB1 =
+ * 0x3095d1d0 on every HAT: every LAN8651 retries in lock step, and an
+ * excessive collision drop is what triggers errata DS80001075F s4.
+ *
+ * backoff_seed=1 (default) keeps the MAC address unchanged on the wire but
+ * moves the address filter to Specific Address 2 (MAC_SAB2/SAT2) and
+ * writes a seed derived from all six MAC bytes to MAC_SAB1 only.  Writing
+ * SAB1 deactivates specific address 1 and only a SAT1 write would activate
+ * it again (DS60001734F 11.2.5), so SAB1 is used for nothing but the seed.
+ * backoff_seed=0 is the SDK behaviour (MAC in SAB1/SAT1).
+ * TODO(spec): the data sheet does not say when the PRBS samples SAB1;
+ * lan865x_reload_backoff_seed() toggles MAC_NCR.TXEN to be safe.
+ */
+static unsigned int backoff_seed = 1;
+module_param(backoff_seed, uint, 0444);
+MODULE_PARM_DESC(backoff_seed, "1 = per-node CSMA back-off seed in MAC_SAB1, MAC filter in SA2 (default); 0 = SDK behaviour");
+
+#define LAN865X_REG_MAC_L_SADDR2  0x00010024
+#define LAN865X_REG_MAC_H_SADDR2  0x00010025
+
+static u32 lan865x_backoff_seed(const u8 *mac)
+{
+    u32 h = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+
+    h ^= ((mac[5] << 8) | mac[4]) * 0x9E3779B1u;
+    /* murmur3 fmix32: every MAC bit affects every seed bit */
+    h ^= h >> 16;
+    h *= 0x85EBCA6Bu;
+    h ^= h >> 13;
+    h *= 0xC2B2AE35u;
+    h ^= h >> 16;
+
+    return h ? h : 1; /* never an all-zero PRBS seed */
+}
+
+static int lan865x_reload_backoff_seed(struct lan865x_priv *priv)
+{
+    u32 ncr;
+    int ret;
+
+    if (!backoff_seed) {
+        return 0;
+    }
+    ret = oa_tc6_read_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, &ncr);
+    if (ret || !(ncr & MAC_NET_CTL_TXEN)) {
+        return ret;
+    }
+    ret = oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, ncr & ~MAC_NET_CTL_TXEN);
+    if (ret) {
+        return ret;
+    }
+    return oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, ncr);
+}
+
 static int lan865x_set_hw_macaddr(struct lan865x_priv *priv, const u8 *mac)
 {
     int restore_ret;
     u32 regval;
     int ret;
+
+    if (backoff_seed) {
+        u32 seed = lan865x_backoff_seed(mac);
+
+        /* filter: SAB2 write deactivates, SAT2 write activates (11.2.7/8) */
+        regval = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+        ret = oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_L_SADDR2, regval);
+        if (ret) {
+            return ret;
+        }
+        ret = oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_H_SADDR2, (mac[5] << 8) | mac[4]);
+        if (ret) {
+            return ret;
+        }
+        ret = oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_L_SADDR1, seed);
+        if (!ret) {
+            dev_info(&priv->spi->dev, "MAC %pM in specific address 2, back-off seed MAC_SAB1=0x%08x\n", mac, seed);
+        }
+        return ret;
+    }
 
     /* Configure MAC address low bytes */
     ret = lan865x_set_hw_macaddr_low_bytes(priv->tc6, mac);
@@ -443,6 +529,7 @@ int lan865x_restore_hw_config(struct lan865x_priv* priv)
     if (ret) {
         return ret;
     }
+    lan865x_reload_backoff_seed(priv);
 
     /* promiscuous / multicast filter */
     schedule_work(&priv->multicast_work);
@@ -657,6 +744,7 @@ static int lan865x_probe(struct spi_device *spi)
     get_defined_mac(&spi->dev, priv, mac);
     eth_hw_addr_set(netdev, mac);
     lan865x_set_hw_macaddr(priv, mac);
+    lan865x_reload_backoff_seed(priv);
 
     netdev->if_port = IF_PORT_10BASET;
     netdev->irq = spi->irq;
