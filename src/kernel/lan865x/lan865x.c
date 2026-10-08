@@ -476,10 +476,11 @@ static int lan865x_netdev_ioctl(struct net_device* netdev, struct ifreq* ifr, in
     case SIOCSHWTSTAMP:
         return lan865x_set_ts_config(netdev, ifr);
     default:
-        return -EOPNOTSUPP;
+        /* SIOCGMIIPHY/SIOCGMIIREG/SIOCSMIIREG (upstream 34c21e91192a) */
+        return phy_do_ioctl_running(netdev, ifr, cmd);
     }
 #else /* FRAME_TIMESTAMP_ENABLE */
-    return -EOPNOTSUPP;
+    return phy_do_ioctl_running(netdev, ifr, cmd);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 }
 
