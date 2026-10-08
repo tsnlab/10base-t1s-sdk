@@ -784,7 +784,9 @@ sysfs_create_error:
     lan865x_sysfs_remove_device(priv);
 oa_tc6_init_error:
     g_tc6 = NULL;
-    oa_tc6_exit(priv->tc6);
+    if (priv->tc6) {
+        oa_tc6_exit(priv->tc6);
+    }
     free_netdev(netdev);
     return -ENODEV;
 }

@@ -183,6 +183,7 @@ struct oa_tc6 {
 	bool disable_traffic;
 	bool suspended; /* data path parked by oa_tc6_stop_traffic() */
 	unsigned long irq_flags; /* OA_TC6_IRQ_OFF */
+	u32 irq_type_orig; /* trigger type of the IRQ mapping before request */
 	void (*fatal_cb)(void *ctx);
 	void *fatal_ctx;
 	u64 stats[OA_TC6_STAT_NUM];
@@ -2134,11 +2135,19 @@ struct oa_tc6 *oa_tc6_init(struct spi_device *spi, struct net_device *netdev)
 	 * triggered.  The SDK overlay (lan8650-overlay-rpi4.dts) declares
 	 * IRQ_TYPE_EDGE_FALLING; the trigger flags below override it.
 	 */
-	ret = devm_request_threaded_irq(&tc6->spi->dev, tc6->spi->irq,
-					oa_tc6_macphy_isr,
-					oa_tc6_macphy_threaded_irq,
-					IRQF_TRIGGER_LOW | IRQF_ONESHOT,
-					dev_name(&tc6->spi->dev), tc6);
+	/* Requesting with IRQF_TRIGGER_LOW changes the trigger type of the
+	 * existing (DT, edge) mapping.  It has to be put back on exit: the
+	 * next probe maps the IRQ again from DT and of_irq_get() refuses a
+	 * mapping whose type differs ("irq: type mismatch, failed to map
+	 * hwirq-23"), so no driver could bind until a reboot (seen on the lab
+	 * RPi4).  Hence request_threaded_irq() + free_irq() in oa_tc6_exit()
+	 * instead of the devm variant.
+	 */
+	tc6->irq_type_orig = irq_get_trigger_type(tc6->spi->irq);
+	ret = request_threaded_irq(tc6->spi->irq, oa_tc6_macphy_isr,
+				   oa_tc6_macphy_threaded_irq,
+				   IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+				   dev_name(&tc6->spi->dev), tc6);
 	if (ret) {
 		dev_err(&tc6->spi->dev, "Failed to request macphy isr %d\n",
 			ret);
@@ -2172,6 +2181,9 @@ void oa_tc6_exit(struct oa_tc6 *tc6)
 	spin_lock_bh(&tc6->tx_skb_lock);
 	tc6->disable_traffic = true;
 	spin_unlock_bh(&tc6->tx_skb_lock);
+	free_irq(tc6->spi->irq, tc6);
+	if (tc6->irq_type_orig && tc6->irq_type_orig != IRQ_TYPE_LEVEL_LOW)
+		irq_set_irq_type(tc6->spi->irq, tc6->irq_type_orig);
 	oa_tc6_phy_exit(tc6);
 	oa_tc6_free_pending_skbs(tc6);
 }
