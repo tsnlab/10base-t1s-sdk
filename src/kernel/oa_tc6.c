@@ -54,7 +54,20 @@
 #define STATUS0_HEADER_ERROR BIT(5)
 #define STATUS0_LOSS_OF_FRAME_ERROR BIT(4)
 #define STATUS0_RX_BUFFER_OVERFLOW_ERROR BIT(3)
+#define STATUS0_TX_BUFFER_UNDERFLOW_ERROR BIT(2)
+#define STATUS0_TX_BUFFER_OVERFLOW_ERROR BIT(1)
 #define STATUS0_TX_PROTOCOL_ERROR BIT(0)
+#define STATUS0_TXFCSE BIT(11)
+#define STATUS0_CPDE BIT(12)
+
+/* Status Register #1 (LAN8650/1 vendor specific, DS60001734F 11.1.7) */
+#define OA_TC6_REG_STATUS1 0x0009
+#define STATUS1_RXNER BIT(0)
+#define STATUS1_TXNER BIT(1)
+#define STATUS1_FSMSTER BIT(17)
+#define STATUS1_ECC BIT(18)
+#define STATUS1_UV18 BIT(19)
+#define STATUS1_BUSER BIT(20)
 
 /* Buffer Status Register */
 #define OA_TC6_REG_BUFFER_STATUS 0x000B
@@ -66,8 +79,18 @@
 #define INT_MASK0_HEADER_ERR_MASK BIT(5)
 #define INT_MASK0_LOSS_OF_FRAME_ERR_MASK BIT(4)
 #define INT_MASK0_RX_BUFFER_OVERFLOW_ERR_MASK BIT(3)
+#define INT_MASK0_TX_BUFFER_UNDERFLOW_ERR_MASK BIT(2)
+#define INT_MASK0_TX_BUFFER_OVERFLOW_ERR_MASK BIT(1)
 #define INT_MASK0_TX_PROTOCOL_ERR_MASK BIT(0)
 #define INT_MASK0_ALL_INTERRUPTS (GENMASK(5, 0) | GENMASK(12, 7))
+
+/* Interrupt Mask Register #1 (DS60001734F 11.1.10) */
+#define OA_TC6_REG_INT_MASK1 0x000D
+#define INT_MASK1_RXNERM BIT(0)
+#define INT_MASK1_TXNERM BIT(1)
+#define INT_MASK1_FSMSTERM BIT(17)
+#define INT_MASK1_ECCM BIT(18)
+#define INT_MASK1_BUSERM BIT(20)
 
 /* PHY Clause 22 registers base address and mask */
 #define OA_TC6_PHY_STD_REG_ADDR_BASE 0xFF00
@@ -158,6 +181,7 @@ struct oa_tc6 {
 	bool wait_until_start_valid;
 	bool int_flag;
 	bool disable_traffic;
+	u64 stats[OA_TC6_STAT_NUM];
 #ifdef FRAME_TIMESTAMP_ENABLE
 	u8 ongoing_tx_ts_capture_mode;
 	u8 waiting_tx_ts_capture_mode;
@@ -703,6 +727,42 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 // 	return oa_tc6_write_register(tc6, OA_TC6_REG_STATUS0, regval);
 // }
 
+/* err_irq=1 (default): unmask the error sources below so that they set the
+ * footer EXST bit and assert IRQ_N.  err_irq=0 keeps the SDK behaviour up to
+ * dbaae29b (all error sources masked; errors pass silently).
+ */
+static bool err_irq = true;
+module_param(err_irq, bool, 0444);
+MODULE_PARM_DESC(err_irq, "Unmask MAC-PHY error interrupts (OA_IMASK0/1), default 1");
+
+const char oa_tc6_stat_names[OA_TC6_STAT_NUM][32] = {
+	[OA_TC6_STAT_TXPE] = "oa_tx_protocol_errors",
+	[OA_TC6_STAT_TXBOE] = "oa_tx_buffer_overflows",
+	[OA_TC6_STAT_TXBUE] = "oa_tx_buffer_underflows",
+	[OA_TC6_STAT_RXBOE] = "oa_rx_buffer_overflows",
+	[OA_TC6_STAT_LOFE] = "oa_loss_of_framing",
+	[OA_TC6_STAT_HDRE] = "oa_header_errors",
+	[OA_TC6_STAT_RESETC] = "oa_unexpected_resets",
+	[OA_TC6_STAT_TXFCSE] = "oa_tx_fcs_errors",
+	[OA_TC6_STAT_CPDE] = "oa_ctrl_protection_errors",
+	[OA_TC6_STAT_RXNER] = "oa_rx_nonrecoverable",
+	[OA_TC6_STAT_TXNER] = "oa_tx_nonrecoverable",
+	[OA_TC6_STAT_FSMSTER] = "oa_fsm_state_errors",
+	[OA_TC6_STAT_ECC] = "oa_sram_ecc_errors",
+	[OA_TC6_STAT_UV18] = "oa_uv18_events",
+	[OA_TC6_STAT_BUSER] = "oa_bus_errors",
+	[OA_TC6_STAT_FOOTER_HDRB] = "oa_footer_header_bad",
+	[OA_TC6_STAT_FOOTER_UNSYNC] = "oa_footer_unsync",
+	[OA_TC6_STAT_FATAL] = "oa_fatal_errors",
+};
+EXPORT_SYMBOL_GPL(oa_tc6_stat_names);
+
+void oa_tc6_get_stats(struct oa_tc6 *tc6, u64 *data)
+{
+	memcpy(data, tc6->stats, sizeof(tc6->stats));
+}
+EXPORT_SYMBOL_GPL(oa_tc6_get_stats);
+
 static int oa_tc6_unmask_macphy_error_interrupts(struct oa_tc6 *tc6)
 {
 	u32 regval;
@@ -712,14 +772,38 @@ static int oa_tc6_unmask_macphy_error_interrupts(struct oa_tc6 *tc6)
 	if (ret)
 		return ret;
 
-#if 0 /* 20250317 POOKY */
-	regval &=
-		~(INT_MASK0_TX_PROTOCOL_ERR_MASK |
-		  INT_MASK0_RX_BUFFER_OVERFLOW_ERR_MASK |
-		  INT_MASK0_LOSS_OF_FRAME_ERR_MASK | INT_MASK0_HEADER_ERR_MASK);
-#endif
+	/* The SDK had this unmask under '#if 0' (20250317), so OA_IMASK0
+	 * kept its reset value (all error sources masked, DS60001734F
+	 * 11.1.9) and TXPE/TXBOE/RXBOE/LOFE/HDRE never reached the host.
+	 * TXBOE/TXBUE are unmasked in addition to the upstream set: a TX
+	 * buffer overflow means the host overran the chip's credits, which
+	 * is exactly what has to be visible while chasing TX stalls.
+	 */
+	if (err_irq)
+		regval &= ~(INT_MASK0_TX_PROTOCOL_ERR_MASK |
+			    INT_MASK0_TX_BUFFER_OVERFLOW_ERR_MASK |
+			    INT_MASK0_TX_BUFFER_UNDERFLOW_ERR_MASK |
+			    INT_MASK0_RX_BUFFER_OVERFLOW_ERR_MASK |
+			    INT_MASK0_LOSS_OF_FRAME_ERR_MASK |
+			    INT_MASK0_HEADER_ERR_MASK);
 
-	return oa_tc6_write_register(tc6, OA_TC6_REG_INT_MASK0, regval);
+	ret = oa_tc6_write_register(tc6, OA_TC6_REG_INT_MASK0, regval);
+	if (ret || !err_irq)
+		return ret;
+
+	/* DS60001734F 4.6.2: on TXNER/RXNER the transfer of Ethernet frames
+	 * through the device is halted and "the host controller must perform
+	 * a hardware or software reset"; the same applies to FSMSTER and
+	 * BUSER.  All of them are masked at reset (OA_IMASK1 reset value).
+	 */
+	ret = oa_tc6_read_register(tc6, OA_TC6_REG_INT_MASK1, &regval);
+	if (ret)
+		return ret;
+
+	regval &= ~(INT_MASK1_RXNERM | INT_MASK1_TXNERM | INT_MASK1_FSMSTERM |
+		    INT_MASK1_ECCM | INT_MASK1_BUSERM);
+
+	return oa_tc6_write_register(tc6, OA_TC6_REG_INT_MASK1, regval);
 }
 
 static int oa_tc6_enable_data_transfer(struct oa_tc6 *tc6)
@@ -862,6 +946,7 @@ static void oa_tc6_disable_traffic(struct oa_tc6 *tc6)
 	u32 regval = INT_MASK0_ALL_INTERRUPTS;
 	struct sk_buff *skb;
 
+	tc6->stats[OA_TC6_STAT_FATAL]++;
 	spin_lock_bh(&tc6->tx_skb_lock);
 	tc6->disable_traffic = true;
 	skb = oa_tc6_detach_waiting_tx_skb(tc6);
@@ -885,32 +970,124 @@ static void oa_tc6_look_for_new_frame(struct oa_tc6 *tc6)
 	oa_tc6_cleanup_ongoing_rx_skb(tc6);
 }
 
+/* STATUS0/STATUS1 bits owned by this function.  Only these are written back
+ * (W1C).  The SDK wrote back the whole register, which also cleared the
+ * TTSCAA/B/C (and STATUS1 TTSCMx/TTSCOFx) bits that the PTP thread polls,
+ * and RESETC.
+ */
+#define STATUS0_HANDLED (STATUS0_TX_PROTOCOL_ERROR | \
+			 STATUS0_TX_BUFFER_OVERFLOW_ERROR | \
+			 STATUS0_TX_BUFFER_UNDERFLOW_ERROR | \
+			 STATUS0_RX_BUFFER_OVERFLOW_ERROR | \
+			 STATUS0_LOSS_OF_FRAME_ERROR | STATUS0_HEADER_ERROR | \
+			 STATUS0_RESETC | STATUS0_TXFCSE | STATUS0_CPDE)
+#define STATUS1_HANDLED (STATUS1_RXNER | STATUS1_TXNER | STATUS1_FSMSTER | \
+			 STATUS1_ECC | STATUS1_UV18 | STATUS1_BUSER)
+
+static void oa_tc6_count_status(struct oa_tc6 *tc6, u32 st0, u32 st1)
+{
+	static const struct {
+		u32 bit;
+		u8 reg;
+		u8 id;
+	} map[] = {
+		{ STATUS0_TX_PROTOCOL_ERROR, 0, OA_TC6_STAT_TXPE },
+		{ STATUS0_TX_BUFFER_OVERFLOW_ERROR, 0, OA_TC6_STAT_TXBOE },
+		{ STATUS0_TX_BUFFER_UNDERFLOW_ERROR, 0, OA_TC6_STAT_TXBUE },
+		{ STATUS0_RX_BUFFER_OVERFLOW_ERROR, 0, OA_TC6_STAT_RXBOE },
+		{ STATUS0_LOSS_OF_FRAME_ERROR, 0, OA_TC6_STAT_LOFE },
+		{ STATUS0_HEADER_ERROR, 0, OA_TC6_STAT_HDRE },
+		{ STATUS0_RESETC, 0, OA_TC6_STAT_RESETC },
+		{ STATUS0_TXFCSE, 0, OA_TC6_STAT_TXFCSE },
+		{ STATUS0_CPDE, 0, OA_TC6_STAT_CPDE },
+		{ STATUS1_RXNER, 1, OA_TC6_STAT_RXNER },
+		{ STATUS1_TXNER, 1, OA_TC6_STAT_TXNER },
+		{ STATUS1_FSMSTER, 1, OA_TC6_STAT_FSMSTER },
+		{ STATUS1_ECC, 1, OA_TC6_STAT_ECC },
+		{ STATUS1_UV18, 1, OA_TC6_STAT_UV18 },
+		{ STATUS1_BUSER, 1, OA_TC6_STAT_BUSER },
+	};
+
+	for (int i = 0; i < ARRAY_SIZE(map); i++)
+		if ((map[i].reg ? st1 : st0) & map[i].bit)
+			tc6->stats[map[i].id]++;
+}
+
 static int oa_tc6_process_extended_status(struct oa_tc6 *tc6)
 {
-	u32 value;
+	u32 st[2]; /* OA_STATUS0, OA_STATUS1: consecutive, one SPI transaction */
+	u32 value, st1;
 	int ret;
 
-	ret = oa_tc6_read_register(tc6, OA_TC6_REG_STATUS0, &value);
+	ret = oa_tc6_read_registers(tc6, OA_TC6_REG_STATUS0, st, 2);
 	if (ret) {
-		netdev_err(tc6->netdev, "STATUS0 register read failed: %d\n",
+		netdev_err(tc6->netdev, "STATUS0/1 register read failed: %d\n",
 			   ret);
 		return ret;
 	}
+	value = st[0] & STATUS0_HANDLED;
+	st1 = st[1] & STATUS1_HANDLED;
 
 	/* This function is called for each chunk received in a given SPI
 	 * transaction. In case, extended status bit is set in more than
 	 * one chunk, skip the write, if status0 is already cleared.
 	 */
-	if (!value)
+	if (!value && !st1)
 		return 0;
 
+	oa_tc6_count_status(tc6, value, st1);
+
 	/* Clear the error interrupts status */
-	ret = oa_tc6_write_register(tc6, OA_TC6_REG_STATUS0, value);
-	if (ret) {
-		netdev_err(tc6->netdev, "STATUS0 register write failed: %d\n",
-			   ret);
-		return ret;
+	if (value) {
+		ret = oa_tc6_write_register(tc6, OA_TC6_REG_STATUS0, value);
+		if (ret) {
+			netdev_err(tc6->netdev,
+				   "STATUS0 register write failed: %d\n", ret);
+			return ret;
+		}
 	}
+	if (st1) {
+		ret = oa_tc6_write_register(tc6, OA_TC6_REG_STATUS1, st1);
+		if (ret) {
+			netdev_err(tc6->netdev,
+				   "STATUS1 register write failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	/* DS60001734F 4.6.2 / 11.1.7: the host must reset the device */
+	if (st1 & (STATUS1_TXNER | STATUS1_RXNER | STATUS1_FSMSTER |
+		   STATUS1_BUSER)) {
+		netdev_err(tc6->netdev,
+			   "Non-recoverable MAC-PHY error, STATUS1=0x%08x (TXNER=%d RXNER=%d FSMSTER=%d BUSER=%d)\n",
+			   st[1], !!(st1 & STATUS1_TXNER),
+			   !!(st1 & STATUS1_RXNER), !!(st1 & STATUS1_FSMSTER),
+			   !!(st1 & STATUS1_BUSER));
+		return -ENODEV;
+	}
+	if (st1 & (STATUS1_ECC | STATUS1_UV18))
+		net_warn_ratelimited("%s: STATUS1=0x%08x (ECC=%d UV18=%d)\n",
+				     tc6->netdev->name, st[1],
+				     !!(st1 & STATUS1_ECC),
+				     !!(st1 & STATUS1_UV18));
+
+	/* RESETC outside of oa_tc6_sw_reset_macphy(): the device was reset
+	 * behind our back (power glitch, RESET_N) and lost its configuration.
+	 */
+	if (value & STATUS0_RESETC) {
+		netdev_err(tc6->netdev, "Unexpected MAC-PHY reset (RESETC)\n");
+		return -ENODEV;
+	}
+
+	if (value & (STATUS0_TX_BUFFER_OVERFLOW_ERROR |
+		     STATUS0_TX_BUFFER_UNDERFLOW_ERROR | STATUS0_TXFCSE |
+		     STATUS0_CPDE))
+		net_err_ratelimited("%s: STATUS0=0x%08x (TXBOE=%d TXBUE=%d TXFCSE=%d CPDE=%d)\n",
+				    tc6->netdev->name, st[0],
+				    !!(value & STATUS0_TX_BUFFER_OVERFLOW_ERROR),
+				    !!(value & STATUS0_TX_BUFFER_UNDERFLOW_ERROR),
+				    !!(value & STATUS0_TXFCSE),
+				    !!(value & STATUS0_CPDE));
 
 	if (FIELD_GET(STATUS0_RX_BUFFER_OVERFLOW_ERROR, value)) {
 		oa_tc6_look_for_new_frame(tc6);
@@ -964,11 +1141,13 @@ static int oa_tc6_process_rx_chunk_footer(struct oa_tc6 *tc6, u32 footer)
 	 * next version.
 	 */
 	if (FIELD_GET(OA_TC6_DATA_FOOTER_RXD_HEADER_BAD, footer)) {
+		tc6->stats[OA_TC6_STAT_FOOTER_HDRB]++;
 		netdev_err(tc6->netdev, "Rxd header bad error\n");
 		return -ENODEV;
 	}
 
 	if (!FIELD_GET(OA_TC6_DATA_FOOTER_CONFIG_SYNC, footer)) {
+		tc6->stats[OA_TC6_STAT_FOOTER_UNSYNC]++;
 		netdev_err(tc6->netdev, "Config unsync error\n");
 		return -ENODEV;
 	}
