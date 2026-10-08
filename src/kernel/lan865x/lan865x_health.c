@@ -84,6 +84,9 @@ static const char lan865x_hwstat_names[LAN865X_HWSTAT_NUM][ETH_GSTRING_LEN] = {
     [LAN865X_SW_PTP_TS_MISSED] = "ptp_tx_ts_missed",
     [LAN865X_SW_PTP_TS_TIMEOUT] = "ptp_tx_ts_timeouts",
     [LAN865X_SW_PTP_TS_REPLACED] = "ptp_tx_ts_replaced",
+    [LAN865X_SW_CDEN_CHANGES] = "drv_cden_changes",
+    [LAN865X_SW_CDEN] = "drv_cden",
+    [LAN865X_SW_PLCA_PST] = "drv_plca_pst",
 };
 
 static void lan865x_add8(struct lan865x_priv* priv, int id, u32 reg, int shift) {
@@ -287,6 +290,8 @@ static void lan865x_rebaseline(struct lan865x_priv* priv) {
     priv->replay_chip_base = priv->hwstats[LAN865X_HW_FTX];
     priv->replay_att_base = priv->hwstats[LAN865X_HW_TFTX];
     priv->stall_since = 0;
+    priv->cden_cur = -1; /* init_lan865x() set CDEN = 1; re-apply the policy */
+    priv->pst_ok_polls = 0;
 }
 
 /* Called with hw_lock, right after a statistics poll. */
@@ -476,12 +481,103 @@ out:
     rtnl_unlock();
 }
 
+/* ------------------------------------------------------------------------
+ * Collision detection (MMS4 CDCTL0.CDEN) per PLCA state
+ *
+ * DS60001734F CDCTL0 (11.5): "it is recommended that the user write this bit
+ * to a '0' to disable collision detection when PLCA is enabled. When
+ * collision detection is disabled, the PLCA reconciliation sublayer will
+ * still assert logical collisions to the MAC as part of normal operation."
+ * AN1760 Rev F (DS60001760G) and upstream microchip_t1s 78341049fbcd ("net:
+ * phy: microchip_t1s: configure collision detection based on PLCA mode")
+ * do the same: CDEN = 0 with PLCA, 1 with CSMA/CD.  The SDK always set
+ * CDEN = 1 (init_lan865x()), so in the first stall of docs/notes/32 the
+ * node's TO overlapping the BEACON was taken as a collision every cycle.
+ *
+ * But DS60001734F 7.2.4: when the PLCA status (PST) drops "the device will
+ * revert to CSMA/CD operation with PLCA deactivated" - and then collisions
+ * must be detected again.  Hence:
+ *   cden_mode=0  CDEN always 1 (SDK behaviour)
+ *   cden_mode=1  CDEN = !PLCA_CTRL0.EN (AN1760 / upstream, static)
+ *   cden_mode=2  CDEN = !(PLCA_CTRL0.EN && PLCA_STS.PST) (default): on as
+ *                soon as PST is seen 0, off after PST was 1 in two
+ *                consecutive polls.  While PLCA is lost and before the
+ *                next poll (<= stats_ms) collisions go undetected.
+ */
+static unsigned int cden_mode = 2;
+module_param(cden_mode, uint, 0644);
+MODULE_PARM_DESC(cden_mode, "Collision detect: 0 = always on (SDK), 1 = off while PLCA enabled, 2 = off while PLCA enabled and PST=1 (default)");
+
+#define LAN865X_MMS4_PLCA_CTRL0 0x0004CA01 /* CTRL0, CTRL1, STS consecutive */
+#define LAN865X_PLCA_CTRL0_EN BIT(15)
+#define LAN865X_PLCA_STS_PST BIT(15)
+#define LAN865X_CDCTL0_CDEN BIT(15)
+
+static void lan865x_apply_cden(struct lan865x_priv* priv) {
+    u32 plca[3]; /* PLCA_CTRL0, PLCA_CTRL1, PLCA_STS */
+    bool en, pst;
+    int want;
+    u32 cd;
+
+    if (oa_tc6_read_registers(priv->tc6, LAN865X_MMS4_PLCA_CTRL0, plca, 3)) {
+        priv->hwstats[LAN865X_SW_POLL_ERRORS]++;
+        return;
+    }
+    en = plca[0] & LAN865X_PLCA_CTRL0_EN;
+    pst = plca[2] & LAN865X_PLCA_STS_PST;
+    priv->hwstats[LAN865X_SW_PLCA_PST] = pst;
+    priv->pst_ok_polls = (en && pst) ? priv->pst_ok_polls + 1 : 0;
+
+    switch (cden_mode) {
+    case 0:
+        want = 1;
+        break;
+    case 1:
+        want = !en;
+        break;
+    default:
+        if (!en || !pst) {
+            want = 1;
+        } else if (priv->pst_ok_polls >= 2) {
+            want = 0;
+        } else {
+            want = priv->cden_cur < 0 ? 1 : priv->cden_cur;
+        }
+        break;
+    }
+
+    if (want == priv->cden_cur) {
+        return;
+    }
+
+    if (oa_tc6_read_register(priv->tc6, LAN865X_MMS4_CDCTL0, &cd)) {
+        priv->hwstats[LAN865X_SW_POLL_ERRORS]++;
+        return;
+    }
+    /* read-modify-write: reserved fields (CDCTL0 note) */
+    cd = want ? (cd | LAN865X_CDCTL0_CDEN) : (cd & ~LAN865X_CDCTL0_CDEN);
+    if (oa_tc6_write_register(priv->tc6, LAN865X_MMS4_CDCTL0, cd)) {
+        priv->hwstats[LAN865X_SW_POLL_ERRORS]++;
+        return;
+    }
+    if (priv->cden_cur >= 0) {
+        priv->hwstats[LAN865X_SW_CDEN_CHANGES]++;
+        netdev_info(priv->netdev, "collision detection %s (PLCA %s, PST=%d, cden_mode=%u)\n",
+                    want ? "enabled" : "disabled", en ? "enabled" : "disabled", pst, cden_mode);
+    }
+    priv->cden_cur = want;
+    priv->hwstats[LAN865X_SW_CDEN] = want;
+}
+
 static void lan865x_mon_work(struct work_struct* work) {
     struct lan865x_priv* priv = container_of(to_delayed_work(work), struct lan865x_priv, mon_work);
 
     mutex_lock(&priv->hw_lock);
     lan865x_poll_hw_stats(priv);
     lan865x_check_tx(priv);
+    if (!test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags)) {
+        lan865x_apply_cden(priv);
+    }
     mutex_unlock(&priv->hw_lock);
 
     if (stats_ms) {

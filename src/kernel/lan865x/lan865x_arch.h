@@ -135,6 +135,9 @@ struct lan865x_priv {
     u64 replay_host_base; /* tx_packets at the last (re)start */
     u64 replay_chip_base; /* chip FTX at the last (re)start */
     u64 replay_att_base; /* chip TFTX at the last (re)start */
+    /* collision detect policy */
+    int cden_cur; /* -1 = unknown (after reset) */
+    int pst_ok_polls;
 };
 
 struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_info);

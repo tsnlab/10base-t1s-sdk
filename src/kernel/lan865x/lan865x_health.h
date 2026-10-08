@@ -73,6 +73,10 @@ enum lan865x_hwstat_id {
 	LAN865X_SW_PTP_TS_MISSED,	/* OA_STATUS1.TTSCMx: capture missed */
 	LAN865X_SW_PTP_TS_TIMEOUT,
 	LAN865X_SW_PTP_TS_REPLACED,	/* new request before the old one completed */
+	/* collision detect policy (CDCTL0.CDEN) */
+	LAN865X_SW_CDEN_CHANGES,
+	LAN865X_SW_CDEN,	/* gauge: current CDCTL0.CDEN */
+	LAN865X_SW_PLCA_PST,	/* gauge: last PLCA_STS.PST */
 	LAN865X_HWSTAT_NUM,
 };
 
