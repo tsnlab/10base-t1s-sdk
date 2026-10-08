@@ -770,6 +770,21 @@ void oa_tc6_get_stats(struct oa_tc6 *tc6, u64 *data)
 }
 EXPORT_SYMBOL_GPL(oa_tc6_get_stats);
 
+/* LOFE (loss of framing, early CS_N deassertion) is kept masked by default:
+ * on the lab Raspberry Pi 4 (spi-bcm2835, 25 MHz, SPI mode 3) it is set
+ * during the probe's control transactions and re-asserts immediately after
+ * every W1C, while all control echoes and data chunks are intact.  Unmasked,
+ * it made the first data transfer fail (traffic disabled at probe).  This is
+ * presumably why the SDK put the unmask under '#if 0'.  TODO(spec): check the
+ * CS_N timing against DS60001734F (SPI timing) with a logic analyser.
+ */
+#ifndef LAN865X_DEF_LOFE_IRQ
+#define LAN865X_DEF_LOFE_IRQ false
+#endif
+static bool lofe_irq = LAN865X_DEF_LOFE_IRQ;
+module_param(lofe_irq, bool, 0444);
+MODULE_PARM_DESC(lofe_irq, "Also unmask LOFE (loss of framing), default 0");
+
 static int oa_tc6_unmask_macphy_error_interrupts(struct oa_tc6 *tc6)
 {
 	u32 regval;
@@ -791,8 +806,9 @@ static int oa_tc6_unmask_macphy_error_interrupts(struct oa_tc6 *tc6)
 			    INT_MASK0_TX_BUFFER_OVERFLOW_ERR_MASK |
 			    INT_MASK0_TX_BUFFER_UNDERFLOW_ERR_MASK |
 			    INT_MASK0_RX_BUFFER_OVERFLOW_ERR_MASK |
-			    INT_MASK0_LOSS_OF_FRAME_ERR_MASK |
 			    INT_MASK0_HEADER_ERR_MASK);
+	if (err_irq && lofe_irq)
+		regval &= ~INT_MASK0_LOSS_OF_FRAME_ERR_MASK;
 
 	ret = oa_tc6_write_register(tc6, OA_TC6_REG_INT_MASK0, regval);
 	if (ret || !err_irq)
@@ -1122,10 +1138,10 @@ static int oa_tc6_process_extended_status(struct oa_tc6 *tc6)
 	/* TODO: Currently loss of frame and header errors are treated as
 	 * non-recoverable errors. They will be handled in the next version.
 	 */
-	if (FIELD_GET(STATUS0_LOSS_OF_FRAME_ERROR, value)) {
-		netdev_err(tc6->netdev, "Loss of frame error\n");
-		return -ENODEV;
-	}
+	/* Not fatal here (upstream: -ENODEV), see lofe_irq. */
+	if (FIELD_GET(STATUS0_LOSS_OF_FRAME_ERROR, value))
+		net_warn_ratelimited("%s: loss of framing (LOFE) seen\n",
+				     tc6->netdev->name);
 	if (FIELD_GET(STATUS0_HEADER_ERROR, value)) {
 		netdev_err(tc6->netdev, "Header error\n");
 		return -ENODEV;

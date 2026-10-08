@@ -611,8 +611,17 @@ int lan865x_health_init(struct lan865x_priv* priv) {
 }
 
 void lan865x_health_start(struct lan865x_priv* priv) {
+    struct oa_tc6_tx_state st;
+
     lan865x_rebaseline(priv);
     oa_tc6_set_fatal_cb(priv->tc6, lan865x_fatal_cb, priv);
+    /* A fatal error before this point (e.g. in the first data transfer
+     * of oa_tc6_init()) found no callback: recover it now.
+     */
+    oa_tc6_get_tx_state(priv->tc6, &st);
+    if (st.disabled) {
+        lan865x_fatal_cb(priv);
+    }
     if (stats_ms) {
         schedule_delayed_work(&priv->mon_work, msecs_to_jiffies(stats_ms));
     }
