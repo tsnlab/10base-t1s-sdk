@@ -49,6 +49,7 @@
 #define MMS0_STATS12 0x0214
 
 #define MMS0_OA_STATUS0 0x00000008
+#define MMS0_OA_STATUS1 0x00000009
 #define TS_A_MASK (1 << 8)
 #define TS_B_MASK (1 << 9)
 #define TS_C_MASK (1 << 10)
@@ -82,6 +83,9 @@ struct ptp_device {
     struct ptp_clock_info ptp_info;
 
     struct task_struct* ptp_thread;
+    wait_queue_head_t txts_wq; /* woken when a TX timestamp is requested */
+    spinlock_t txts_lock; /* protects lan865x_priv.waiting_txts_skb[] */
+    unsigned long txts_start[LAN865X_TIMESTAMP_ID_MAX]; /* jiffies */
 
     u32 ti_subnano_b24; // timer increase every clock (25MHz) cycle
     u64 offset;

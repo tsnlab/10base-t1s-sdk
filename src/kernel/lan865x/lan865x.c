@@ -366,39 +366,12 @@ static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
 {
     struct lan865x_priv* priv = netdev_priv(netdev);
 #ifdef FRAME_TIMESTAMP_ENABLE
-    struct hwtstamp_config hwts_config = priv->tstamp_config;
-
-    struct sk_buff* cloned_skb;
     u8 ts_capture_mode = LAN865X_TIMESTAMP_ID_NONE;
 
-    if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
-
-        cloned_skb = skb_clone(skb, GFP_ATOMIC);
-        if (!cloned_skb) {
-            netdev_err(netdev, "%s: skb_clone() failed\n", __func__);
-            return -EAGAIN;
-        }
-
-        /* NOTE:
-         *	skb_clone() does not copy the user-space socket (sk) information.
-         *	However, TX timestamping requires a valid sk to queue the timestamp to the user socket.
-         *	Therefore, we manually copy the sk pointer from the original skb. */
-        cloned_skb->sk = skb->sk;
-
-        if (hwts_config.tx_type != HWTSTAMP_TX_ON) {
-            ts_capture_mode = LAN865X_TIMESTAMP_ID_NONE;
-            kfree_skb(cloned_skb);
-        } else if (is_gptp_packet(skb)) {
-            ts_capture_mode = LAN865X_TIMESTAMP_ID_GPTP;
-            priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP] = skb_get(cloned_skb);
-            skb_shinfo(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP])->tx_flags |= SKBTX_IN_PROGRESS;
-        } else {
-            ts_capture_mode = LAN865X_TIMESTAMP_ID_NORMAL;
-            priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL] = skb_get(cloned_skb);
-            skb_shinfo(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL])->tx_flags |= SKBTX_IN_PROGRESS;
-        }
+    if ((skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) && priv->tstamp_config.tx_type == HWTSTAMP_TX_ON) {
+        ts_capture_mode = lan865x_ptp_request_tx_ts(priv, skb);
     }
-    
+
     return oa_tc6_start_xmit(priv->tc6, skb, ts_capture_mode);
 #else /* FRAME_TIMESTAMP_ENABLE */
     return oa_tc6_start_xmit(priv->tc6, skb);

@@ -80,6 +80,10 @@ static const char lan865x_hwstat_names[LAN865X_HWSTAT_NUM][ETH_GSTRING_LEN] = {
     [LAN865X_SW_RCV_LIGHT_OK] = "drv_recovery_txen_ok",
     [LAN865X_SW_RCV_RESET_OK] = "drv_recovery_reset_ok",
     [LAN865X_SW_RCV_FAILED] = "drv_recovery_failed",
+    [LAN865X_SW_PTP_TS_OK] = "ptp_tx_timestamps",
+    [LAN865X_SW_PTP_TS_MISSED] = "ptp_tx_ts_missed",
+    [LAN865X_SW_PTP_TS_TIMEOUT] = "ptp_tx_ts_timeouts",
+    [LAN865X_SW_PTP_TS_REPLACED] = "ptp_tx_ts_replaced",
 };
 
 static void lan865x_add8(struct lan865x_priv* priv, int id, u32 reg, int shift) {

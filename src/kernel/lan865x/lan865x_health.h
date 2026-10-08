@@ -68,6 +68,11 @@ enum lan865x_hwstat_id {
 	LAN865X_SW_RCV_LIGHT_OK,	/* recovered by MAC_NCR.TXEN toggle */
 	LAN865X_SW_RCV_RESET_OK,	/* recovered by MAC-PHY reset + reconfiguration */
 	LAN865X_SW_RCV_FAILED,
+	/* PTP TX timestamps */
+	LAN865X_SW_PTP_TS_OK,
+	LAN865X_SW_PTP_TS_MISSED,	/* OA_STATUS1.TTSCMx: capture missed */
+	LAN865X_SW_PTP_TS_TIMEOUT,
+	LAN865X_SW_PTP_TS_REPLACED,	/* new request before the old one completed */
 	LAN865X_HWSTAT_NUM,
 };
 
