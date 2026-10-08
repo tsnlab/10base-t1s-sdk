@@ -11,9 +11,12 @@
 #include "lan865x_health.h"
 #include "lan865x_arch.h"
 
+#include <linux/delay.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
+#include <linux/phy.h>
+#include <linux/rtnetlink.h>
 #include <linux/workqueue.h>
 
 /* MMS1 STATS0..STATS12 (0x0208..0x0214), all clear-on-read (11.2.26-38).
@@ -69,6 +72,14 @@ static const char lan865x_hwstat_names[LAN865X_HWSTAT_NUM][ETH_GSTRING_LEN] = {
     [LAN865X_HW_STS1_DEC5B] = "phy_ev_5b_decode_error",
     [LAN865X_SW_SATURATED] = "drv_hw_counter_saturated",
     [LAN865X_SW_POLL_ERRORS] = "drv_stats_poll_errors",
+    [LAN865X_SW_STALL_DETECTED] = "drv_tx_stall_detected",
+    [LAN865X_SW_REPLAY_DETECTED] = "drv_tx_replay_detected",
+    [LAN865X_SW_WATCHDOG] = "drv_tx_watchdog",
+    [LAN865X_SW_FATAL] = "drv_fatal_errors",
+    [LAN865X_SW_KICKS] = "drv_tx_kicks",
+    [LAN865X_SW_RCV_LIGHT_OK] = "drv_recovery_txen_ok",
+    [LAN865X_SW_RCV_RESET_OK] = "drv_recovery_reset_ok",
+    [LAN865X_SW_RCV_FAILED] = "drv_recovery_failed",
 };
 
 static void lan865x_add8(struct lan865x_priv* priv, int id, u32 reg, int shift) {
@@ -158,11 +169,315 @@ static void lan865x_poll_hw_stats(struct lan865x_priv* priv) {
     }
 }
 
+/* ------------------------------------------------------------------------
+ * TX stall detection and recovery
+ *
+ * docs/notes/32: twice the LAN8651 stopped transmitting for good (RX kept
+ * working) after excessive collisions; errata DS80001075F s4 "Packet
+ * transmission halts on occurrence of excessive collisions".  In this
+ * driver "RX works but TX never resumes" can only mean that every RX footer
+ * reports TXC = 0.  Before this change nothing noticed it (no
+ * ndo_tx_timeout, no MAC statistics) and only a reboot recovered.
+ *
+ * Detection (any of):
+ *  - stall:   a TX skb is pending, the footer TXC is 0, OA_BUFSTS.TXC reads
+ *             0 and the chip's TFTX ("frames attempted, incl. errors") has
+ *             not moved for tx_stall_ms.  A merely congested segment keeps
+ *             TFTX moving (every frame ends either sent or as XCOL).
+ *  - replay:  the chip's FTX (frames sent OK) since the last (re)start
+ *             exceeds the frames the host handed over by more than
+ *             replay_slack.  First stall: the chip re-sent 25 old frames
+ *             ~8000 times/s without any SPI TX.
+ *  - watchdog: ndo_tx_timeout (queue stopped for watchdog_timeo).
+ *  - fatal:   oa_tc6 fatal error (TXNER/RXNER/FSMSTER/BUSER, unexpected
+ *             RESETC, TXPE/LOFE/HDRE, footer errors, SPI errors).
+ *
+ * Recovery (recovery_mode):
+ *  0  log only (and dump state)
+ *  1  park the data path, toggle MAC_NCR.TXEN ("writing 0 stops
+ *     transmission immediately, the transmit pipeline is cleared",
+ *     DS60001734F 11.2.1) and check OA_BUFSTS.TXC; if the credits did not
+ *     come back, fall through to 2.  Experimental: whether the TXEN toggle
+ *     releases the TX buffer is exactly what is not known yet.
+ *  2  park the data path, software-reset the MAC-PHY, redo the full
+ *     configuration (oa_tc6_hw_reinit() + lan865x_restore_hw_config()),
+ *     restart.  Default.
+ * Recoveries closer than 10 s to the previous one are delayed with an
+ * exponential back-off (1 s .. 30 s).  The PTP hardware clock restarts
+ * from 0 after a reset.
+ */
+static unsigned int tx_stall_ms = 2000;
+module_param(tx_stall_ms, uint, 0644);
+MODULE_PARM_DESC(tx_stall_ms, "TX stall detection time in ms (also the netdev watchdog timeout), default 2000");
+
+static unsigned int recovery_mode = 2;
+module_param(recovery_mode, uint, 0644);
+MODULE_PARM_DESC(recovery_mode, "TX stall/fatal error recovery: 0 = log only, 1 = TXEN toggle then reset, 2 = reset (default)");
+
+static unsigned int replay_slack = 64;
+module_param(replay_slack, uint, 0644);
+MODULE_PARM_DESC(replay_slack, "Replay detection: chip FTX may exceed host TX frames by this much (0 = off), default 64");
+
+#define LAN865X_RCV_PENDING 0
+#define LAN865X_RCV_STOPPING 1
+#define LAN865X_RCV_PARKED 2 /* oa_tc6_stop_traffic() done, start_traffic() not yet */
+
+enum lan865x_rcv_reason {
+    LAN865X_RCV_STALL,
+    LAN865X_RCV_REPLAY,
+    LAN865X_RCV_WATCHDOG,
+    LAN865X_RCV_FATAL,
+};
+
+static const char* const lan865x_rcv_reason_str[] = {
+    [LAN865X_RCV_STALL] = "TX stall (TXC=0, no TX progress)",
+    [LAN865X_RCV_REPLAY] = "TX replay (chip sent frames the host never gave it)",
+    [LAN865X_RCV_WATCHDOG] = "netdev TX watchdog",
+    [LAN865X_RCV_FATAL] = "fatal MAC-PHY error",
+};
+
+#define LAN865X_MMS1_MAC_NCR 0x00010000
+#define LAN865X_MAC_NCR_TXEN BIT(3)
+#define LAN865X_MMS4_PLCA_STS 0x0004CA03
+#define LAN865X_MMS4_CDCTL0 0x00040087
+#define LAN865X_TXC_MAX 0x30 /* OA_BUFSTS.TXC reset value: 48 chunks */
+
+static void lan865x_trigger_recovery(struct lan865x_priv* priv, int reason) {
+    unsigned int delay = 0;
+
+    if (test_bit(LAN865X_RCV_STOPPING, &priv->rcv_flags)) {
+        return;
+    }
+    if (test_and_set_bit(LAN865X_RCV_PENDING, &priv->rcv_flags)) {
+        return;
+    }
+
+    priv->rcv_reason = reason;
+    if (priv->rcv_last && time_before(jiffies, priv->rcv_last + 10 * HZ)) {
+        priv->rcv_backoff_ms = clamp(priv->rcv_backoff_ms * 2, 1000U, 30000U);
+        delay = priv->rcv_backoff_ms;
+    } else {
+        priv->rcv_backoff_ms = 0;
+    }
+    netdev_warn(priv->netdev, "%s detected, recovery in %u ms (mode %u)\n", lan865x_rcv_reason_str[reason], delay,
+                recovery_mode);
+    schedule_delayed_work(&priv->rcv_work, msecs_to_jiffies(delay));
+}
+
+static void lan865x_fatal_cb(void* ctx) {
+    struct lan865x_priv* priv = ctx;
+
+    priv->hwstats[LAN865X_SW_FATAL]++;
+    lan865x_trigger_recovery(priv, LAN865X_RCV_FATAL);
+}
+
+void lan865x_health_tx_timeout(struct net_device* netdev, unsigned int txqueue) {
+    struct lan865x_priv* priv = netdev_priv(netdev);
+
+    priv->hwstats[LAN865X_SW_WATCHDOG]++;
+    lan865x_trigger_recovery(priv, LAN865X_RCV_WATCHDOG);
+}
+
+static void lan865x_rebaseline(struct lan865x_priv* priv) {
+    priv->replay_host_base = priv->netdev->stats.tx_packets;
+    priv->replay_chip_base = priv->hwstats[LAN865X_HW_FTX];
+    priv->replay_att_base = priv->hwstats[LAN865X_HW_TFTX];
+    priv->stall_since = 0;
+}
+
+/* Called with hw_lock, right after a statistics poll. */
+static void lan865x_check_tx(struct lan865x_priv* priv) {
+    struct oa_tc6_tx_state st;
+    u64 host, chip, att;
+    u8 txc, rba;
+
+    if (test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags)) {
+        return;
+    }
+
+    oa_tc6_get_tx_state(priv->tc6, &st);
+    if (st.disabled) {
+        return; /* fatal path already triggered the recovery */
+    }
+
+    host = priv->netdev->stats.tx_packets - priv->replay_host_base;
+    chip = priv->hwstats[LAN865X_HW_FTX] - priv->replay_chip_base;
+    att = priv->hwstats[LAN865X_HW_TFTX] - priv->replay_att_base;
+    /* FTX (sent OK) can never exceed what the host handed over.  TFTX
+     * ("attempted, incl. errors") might count each of up to 16 attempts
+     * (TODO(spec): per frame or per attempt is not stated), hence x16.
+     */
+    if (replay_slack && (chip > host + replay_slack || att > 16 * (host + replay_slack))) {
+        netdev_err(priv->netdev, "chip transmitted %llu frames OK / %llu attempted, host handed over %llu\n", chip,
+                   att, host);
+        priv->hwstats[LAN865X_SW_REPLAY_DETECTED]++;
+        lan865x_trigger_recovery(priv, LAN865X_RCV_REPLAY);
+        return;
+    }
+
+    if (!st.tx_pending || st.tx_credits) {
+        priv->stall_since = 0;
+        return;
+    }
+
+    if (!priv->stall_since || priv->hwstats[LAN865X_HW_TFTX] != priv->stall_tftx) {
+        /* first suspicion, or the chip is still finishing frames */
+        priv->stall_since = jiffies | 1;
+        priv->stall_tftx = priv->hwstats[LAN865X_HW_TFTX];
+        return;
+    }
+
+    if (time_before(jiffies, priv->stall_since + msecs_to_jiffies(tx_stall_ms))) {
+        return;
+    }
+
+    if (oa_tc6_read_buffer_status(priv->tc6, &txc, &rba)) {
+        return;
+    }
+    if (txc) {
+        /* The chip has credits but the last footer said 0 and no IRQ
+         * came: re-run a data transfer instead of resetting.
+         */
+        netdev_warn(priv->netdev, "TX credits %u available but not reported, kicking the data path\n", txc);
+        priv->hwstats[LAN865X_SW_KICKS]++;
+        priv->stall_since = 0;
+        oa_tc6_kick(priv->tc6);
+        return;
+    }
+
+    priv->hwstats[LAN865X_SW_STALL_DETECTED]++;
+    lan865x_trigger_recovery(priv, LAN865X_RCV_STALL);
+}
+
+/* One line with everything needed to tell chip from driver (docs/notes/32
+ * section 2.5): BUFSTS.TXC = 0 with XCOL > 0 means the chip.
+ */
+static void lan865x_dump_state(struct lan865x_priv* priv, const char* when) {
+    struct oa_tc6_tx_state st;
+    u32 st01[2] = { 0 }, bufsts = 0, ncr = 0, plca = 0, cd = 0;
+
+    oa_tc6_get_tx_state(priv->tc6, &st);
+    oa_tc6_read_registers(priv->tc6, 0x00000008, st01, 2); /* OA_STATUS0/1 */
+    oa_tc6_read_register(priv->tc6, 0x0000000B, &bufsts);  /* OA_BUFSTS */
+    oa_tc6_read_register(priv->tc6, LAN865X_MMS1_MAC_NCR, &ncr);
+    oa_tc6_read_register(priv->tc6, LAN865X_MMS4_PLCA_STS, &plca);
+    oa_tc6_read_register(priv->tc6, LAN865X_MMS4_CDCTL0, &cd);
+    netdev_warn(priv->netdev,
+                "%s: STATUS0=0x%08x STATUS1=0x%08x BUFSTS=0x%08x (TXC=%u RBA=%u) NCR=0x%08x PLCA_STS=0x%04x "
+                "CDCTL0=0x%04x | footer TXC=%u pending=%d | XCOL=%llu TFTX=%llu FTX=%llu CORTX=%llu tx_packets=%lu\n",
+                when, st01[0], st01[1], bufsts, (bufsts >> 8) & 0xFF, bufsts & 0xFF, ncr, plca, cd, st.tx_credits,
+                st.tx_pending, priv->hwstats[LAN865X_HW_XCOL], priv->hwstats[LAN865X_HW_TFTX],
+                priv->hwstats[LAN865X_HW_FTX], priv->hwstats[LAN865X_HW_CORTX], priv->netdev->stats.tx_packets);
+}
+
+static bool lan865x_try_txen_toggle(struct lan865x_priv* priv) {
+    u32 ncr;
+    u8 txc = 0, rba;
+
+    if (oa_tc6_read_register(priv->tc6, LAN865X_MMS1_MAC_NCR, &ncr)) {
+        return false;
+    }
+    if (oa_tc6_write_register(priv->tc6, LAN865X_MMS1_MAC_NCR, ncr & ~LAN865X_MAC_NCR_TXEN) ||
+        oa_tc6_write_register(priv->tc6, LAN865X_MMS1_MAC_NCR, ncr | LAN865X_MAC_NCR_TXEN)) {
+        return false;
+    }
+    msleep(10);
+    if (oa_tc6_read_buffer_status(priv->tc6, &txc, &rba)) {
+        return false;
+    }
+    netdev_warn(priv->netdev, "after MAC_NCR.TXEN toggle: BUFSTS.TXC=%u\n", txc);
+    return txc == LAN865X_TXC_MAX;
+}
+
+static void lan865x_rcv_work(struct work_struct* work) {
+    struct lan865x_priv* priv = container_of(to_delayed_work(work), struct lan865x_priv, rcv_work);
+    struct net_device* netdev = priv->netdev;
+    struct phy_device* phydev = netdev->phydev;
+    int reason = priv->rcv_reason;
+    bool ok = false;
+    int ret = 0;
+
+    rtnl_lock();
+    mutex_lock(&priv->hw_lock);
+
+    if (test_bit(LAN865X_RCV_STOPPING, &priv->rcv_flags)) {
+        goto out;
+    }
+
+    lan865x_poll_hw_stats(priv); /* keep the counts the reset would clear */
+    lan865x_dump_state(priv, "before recovery");
+
+    if (recovery_mode == 0) {
+        netdev_warn(netdev, "recovery_mode=0: not recovering (%s)\n", lan865x_rcv_reason_str[reason]);
+        lan865x_rebaseline(priv);
+        goto out;
+    }
+
+    if (!test_and_set_bit(LAN865X_RCV_PARKED, &priv->rcv_flags)) {
+        /* not again when retrying after a failed attempt */
+        priv->rcv_phy_started = phydev && phy_is_started(phydev);
+        netif_tx_disable(netdev);
+        if (priv->rcv_phy_started) {
+            phy_stop(phydev);
+        }
+        oa_tc6_stop_traffic(priv->tc6);
+    }
+
+    if (recovery_mode == 1 && reason != LAN865X_RCV_FATAL) {
+        ok = lan865x_try_txen_toggle(priv);
+        if (ok) {
+            priv->hwstats[LAN865X_SW_RCV_LIGHT_OK]++;
+        }
+    }
+
+    if (!ok) {
+        ret = oa_tc6_hw_reinit(priv->tc6);
+        if (!ret) {
+            ret = lan865x_restore_hw_config(priv);
+        }
+        if (!ret) {
+            priv->hwstats[LAN865X_SW_RCV_RESET_OK]++;
+            ok = true;
+        }
+    }
+
+    if (!ok) {
+        /* Leave the data path parked and try again (with back-off). */
+        priv->hwstats[LAN865X_SW_RCV_FAILED]++;
+        netdev_err(netdev, "recovery failed: %d\n", ret);
+        priv->rcv_last = jiffies;
+        clear_bit(LAN865X_RCV_PENDING, &priv->rcv_flags);
+        mutex_unlock(&priv->hw_lock);
+        rtnl_unlock();
+        lan865x_trigger_recovery(priv, LAN865X_RCV_FATAL);
+        return;
+    }
+
+    oa_tc6_start_traffic(priv->tc6);
+    clear_bit(LAN865X_RCV_PARKED, &priv->rcv_flags);
+    if (priv->rcv_phy_started) {
+        phy_start(phydev);
+    }
+    if (netif_running(netdev)) {
+        netif_tx_wake_all_queues(netdev);
+    }
+    lan865x_rebaseline(priv);
+    lan865x_dump_state(priv, "after recovery");
+    netdev_warn(netdev, "recovered from %s\n", lan865x_rcv_reason_str[reason]);
+
+out:
+    priv->rcv_last = jiffies;
+    clear_bit(LAN865X_RCV_PENDING, &priv->rcv_flags);
+    mutex_unlock(&priv->hw_lock);
+    rtnl_unlock();
+}
+
 static void lan865x_mon_work(struct work_struct* work) {
     struct lan865x_priv* priv = container_of(to_delayed_work(work), struct lan865x_priv, mon_work);
 
     mutex_lock(&priv->hw_lock);
     lan865x_poll_hw_stats(priv);
+    lan865x_check_tx(priv);
     mutex_unlock(&priv->hw_lock);
 
     if (stats_ms) {
@@ -174,17 +489,27 @@ int lan865x_health_init(struct lan865x_priv* priv) {
     mutex_init(&priv->hw_lock);
     spin_lock_init(&priv->stats_lock);
     INIT_DELAYED_WORK(&priv->mon_work, lan865x_mon_work);
+    INIT_DELAYED_WORK(&priv->rcv_work, lan865x_rcv_work);
+    /* before register_netdev(): dev_activate() picks it up on open */
+    priv->netdev->watchdog_timeo = msecs_to_jiffies(tx_stall_ms ? tx_stall_ms : 2000);
     return 0;
 }
 
 void lan865x_health_start(struct lan865x_priv* priv) {
+    lan865x_rebaseline(priv);
+    oa_tc6_set_fatal_cb(priv->tc6, lan865x_fatal_cb, priv);
     if (stats_ms) {
         schedule_delayed_work(&priv->mon_work, msecs_to_jiffies(stats_ms));
     }
 }
 
 void lan865x_health_stop(struct lan865x_priv* priv) {
+    set_bit(LAN865X_RCV_STOPPING, &priv->rcv_flags);
+    if (priv->tc6) {
+        oa_tc6_set_fatal_cb(priv->tc6, NULL, NULL);
+    }
     cancel_delayed_work_sync(&priv->mon_work);
+    cancel_delayed_work_sync(&priv->rcv_work);
 }
 
 /* netdev statistics = driver software counters + chip MAC/PHY counters */

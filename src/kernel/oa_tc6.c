@@ -181,6 +181,10 @@ struct oa_tc6 {
 	bool wait_until_start_valid;
 	bool int_flag;
 	bool disable_traffic;
+	bool suspended; /* data path parked by oa_tc6_stop_traffic() */
+	unsigned long irq_flags; /* OA_TC6_IRQ_OFF */
+	void (*fatal_cb)(void *ctx);
+	void *fatal_ctx;
 	u64 stats[OA_TC6_STAT_NUM];
 #ifdef FRAME_TIMESTAMP_ENABLE
 	u8 ongoing_tx_ts_capture_mode;
@@ -937,6 +941,19 @@ static void oa_tc6_free_pending_skbs(struct oa_tc6 *tc6)
 	oa_tc6_cleanup_waiting_tx_skb(tc6);
 }
 
+#define OA_TC6_IRQ_OFF 0
+
+/* Disable the IRQ once on a fatal error.  Upstream calls disable_irq_nosync()
+ * from both the hard and the threaded handler and never re-enables it, so
+ * the depth does not matter there; oa_tc6_start_traffic() has to undo it
+ * exactly once.
+ */
+static void oa_tc6_fatal_irq_off(struct oa_tc6 *tc6)
+{
+	if (!test_and_set_bit(OA_TC6_IRQ_OFF, &tc6->irq_flags))
+		disable_irq_nosync(tc6->spi->irq);
+}
+
 /* If the failure is at SPI interface level, masking and clearing
  * the interrupt of the device won't work. Since SPI interrupt is
  * disabled, it should stop the repeated interrupts.
@@ -1618,6 +1635,7 @@ static int oa_tc6_try_spi_transfer(struct oa_tc6 *tc6)
 static irqreturn_t oa_tc6_macphy_threaded_irq(int irq, void *data)
 {
 	struct oa_tc6 *tc6 = data;
+	void (*cb)(void *ctx);
 	int ret = 0;
 
 	/* It is possible that interrupt woke the thread before it is
@@ -1626,7 +1644,7 @@ static irqreturn_t oa_tc6_macphy_threaded_irq(int irq, void *data)
 	 * are already freed.
 	 */
 	spin_lock_bh(&tc6->tx_skb_lock);
-	if (tc6->disable_traffic) {
+	if (tc6->disable_traffic || tc6->suspended) {
 		spin_unlock_bh(&tc6->tx_skb_lock);
 		return IRQ_HANDLED;
 	}
@@ -1636,8 +1654,12 @@ static irqreturn_t oa_tc6_macphy_threaded_irq(int irq, void *data)
 	       (tc6->waiting_tx_skb && tc6->tx_credits)) {
 		ret = oa_tc6_try_spi_transfer(tc6);
 		if (ret) {
-			disable_irq_nosync(tc6->spi->irq);
+			oa_tc6_fatal_irq_off(tc6);
 			oa_tc6_disable_traffic(tc6);
+			/* Let the MAC driver reset the device (process context) */
+			cb = READ_ONCE(tc6->fatal_cb);
+			if (cb)
+				cb(tc6->fatal_ctx);
 			break;
 		}
 	}
@@ -1677,7 +1699,7 @@ static irqreturn_t oa_tc6_macphy_isr(int irq, void *data)
 	 * - extended status event not reported in the previous rx footer.
 	 */
 	if (tc6->disable_traffic)
-		disable_irq_nosync(tc6->spi->irq);
+		oa_tc6_fatal_irq_off(tc6);
 	else
 		tc6->int_flag = true;
 	/* Wake IRQ thread to perform spi transfer . In case
@@ -1732,7 +1754,8 @@ netdev_tx_t oa_tc6_start_xmit(struct oa_tc6 *tc6, struct sk_buff *skb)
 	}
 
 	spin_lock_bh(&tc6->tx_skb_lock);
-	if (tc6->waiting_tx_skb) {
+	if (tc6->waiting_tx_skb || tc6->suspended) {
+		/* suspended: recovery in progress, the stack keeps the skb */
 		netif_stop_queue(tc6->netdev);
 		spin_unlock_bh(&tc6->tx_skb_lock);
 		return NETDEV_TX_BUSY;
@@ -2134,6 +2157,126 @@ void oa_tc6_exit(struct oa_tc6 *tc6)
 	oa_tc6_free_pending_skbs(tc6);
 }
 EXPORT_SYMBOL_GPL(oa_tc6_exit);
+
+/* ---- TX stall / fatal error recovery support (TSN Lab) ----
+ *
+ * None of this exists upstream: there, a fatal error leaves the device
+ * dead until the driver is reloaded, and nothing detects a MAC-PHY that
+ * silently stops returning TX credits (errata DS80001075F s4).
+ */
+
+void oa_tc6_set_fatal_cb(struct oa_tc6 *tc6, void (*cb)(void *ctx), void *ctx)
+{
+	tc6->fatal_ctx = ctx;
+	tc6->fatal_cb = cb;
+}
+EXPORT_SYMBOL_GPL(oa_tc6_set_fatal_cb);
+
+/* Snapshot for the stall detector.  Lockless reads of values written by the
+ * IRQ thread; good enough for a check that has to hold for seconds.
+ */
+void oa_tc6_get_tx_state(struct oa_tc6 *tc6, struct oa_tc6_tx_state *st)
+{
+	st->tx_pending = READ_ONCE(tc6->waiting_tx_skb) ||
+			 READ_ONCE(tc6->ongoing_tx_skb);
+	st->tx_credits = READ_ONCE(tc6->tx_credits);
+	st->disabled = READ_ONCE(tc6->disable_traffic);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_get_tx_state);
+
+/* OA_BUFSTS (MMS0 0x000B): TXC[15:8], RBA[7:0], DS60001734F 11.1.8 */
+int oa_tc6_read_buffer_status(struct oa_tc6 *tc6, u8 *txc, u8 *rba)
+{
+	u32 value;
+	int ret;
+
+	ret = oa_tc6_read_register(tc6, OA_TC6_REG_BUFFER_STATUS, &value);
+	if (ret)
+		return ret;
+	*txc = FIELD_GET(BUFFER_STATUS_TX_CREDITS_AVAILABLE, value);
+	*rba = FIELD_GET(BUFFER_STATUS_RX_CHUNKS_AVAILABLE, value);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(oa_tc6_read_buffer_status);
+
+/* Re-run a data transfer even though no interrupt came (lost IRQ). */
+void oa_tc6_kick(struct oa_tc6 *tc6)
+{
+	tc6->int_flag = true;
+	irq_wake_thread(tc6->spi->irq, tc6);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_kick);
+
+/* Park the data path: no SPI data transfer runs after this returns, and all
+ * pending skbs are dropped.  Process context only (disable_irq() sleeps).
+ */
+void oa_tc6_stop_traffic(struct oa_tc6 *tc6)
+{
+	spin_lock_bh(&tc6->tx_skb_lock);
+	tc6->suspended = true;
+	spin_unlock_bh(&tc6->tx_skb_lock);
+
+	/* Waits for a running IRQ thread; a thread woken later by
+	 * irq_wake_thread() sees 'suspended' and returns.
+	 */
+	disable_irq(tc6->spi->irq);
+	oa_tc6_free_pending_skbs(tc6);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_stop_traffic);
+
+/* Software-reset the MAC-PHY and redo the oa_tc6_init()/probe register
+ * sequence (same order): OA_RESET.SWRESET, error IRQ unmask, AN1760
+ * configuration + PLCA enable + MAC TX/RX enable (init_lan865x()), ZARFE,
+ * CONFIG0.SYNC, buffer status.  The MAC driver restores its own settings
+ * (MAC address, PLCA node ID, filters) afterwards.
+ */
+int oa_tc6_hw_reinit(struct oa_tc6 *tc6)
+{
+	int ret;
+
+	ret = oa_tc6_sw_reset_macphy(tc6);
+	if (ret)
+		return ret;
+	ret = oa_tc6_unmask_macphy_error_interrupts(tc6);
+	if (ret)
+		return ret;
+	ret = init_lan865x(tc6);
+	if (ret)
+		return ret;
+	ret = oa_tc6_zero_align_receive_frame_enable(tc6);
+	if (ret)
+		return ret;
+	ret = oa_tc6_enable_data_transfer(tc6);
+	if (ret)
+		return ret;
+	return oa_tc6_update_buffer_status_from_register(tc6);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_hw_reinit);
+
+/* Undo oa_tc6_stop_traffic() (and a fatal-error disable). */
+void oa_tc6_start_traffic(struct oa_tc6 *tc6)
+{
+	tc6->tx_skb_offset = 0;
+	tc6->wait_until_start_valid = false;
+#ifdef FRAME_TIMESTAMP_ENABLE
+	tc6->ongoing_tx_ts_capture_mode = 0;
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
+	spin_lock_bh(&tc6->tx_skb_lock);
+	tc6->suspended = false;
+	tc6->disable_traffic = false;
+	spin_unlock_bh(&tc6->tx_skb_lock);
+
+	if (test_and_clear_bit(OA_TC6_IRQ_OFF, &tc6->irq_flags))
+		enable_irq(tc6->spi->irq);
+	enable_irq(tc6->spi->irq);
+
+	/* IRQ_N is asserted after a reset until the first data chunk;
+	 * an empty chunk also refreshes TXC/RCA (see oa_tc6_init()).
+	 */
+	oa_tc6_kick(tc6);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_start_traffic);
 
 MODULE_DESCRIPTION("OPEN Alliance 10BASE‑T1x MAC‑PHY Serial Interface Lib");
 MODULE_AUTHOR("Parthiban Veerasooran <parthiban.veerasooran@microchip.com>");

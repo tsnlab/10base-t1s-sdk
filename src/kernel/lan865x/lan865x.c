@@ -453,6 +453,34 @@ static int lan865x_hw_enable(struct lan865x_priv* priv) {
     return 0;
 }
 
+/* After oa_tc6_hw_reinit() (TX stall / fatal error recovery, see
+ * lan865x_health.c) the MAC-PHY is back at the init_lan865x() state: PLCA
+ * enabled with the reset node ID, no MAC address, MAC TX/RX enabled.
+ */
+int lan865x_restore_hw_config(struct lan865x_priv* priv)
+{
+    int ret;
+
+    ret = lan865x_set_nodeid(priv, priv->node_id);
+    if (ret) {
+        return ret;
+    }
+
+    ret = lan865x_set_hw_macaddr(priv, priv->netdev->dev_addr);
+    if (ret) {
+        return ret;
+    }
+
+    /* promiscuous / multicast filter */
+    schedule_work(&priv->multicast_work);
+
+    if (!netif_running(priv->netdev)) {
+        return lan865x_hw_disable(priv);
+    }
+
+    return 0;
+}
+
 static int lan865x_net_open(struct net_device *netdev)
 {
     struct lan865x_priv* priv = netdev_priv(netdev);
@@ -496,6 +524,7 @@ static const struct net_device_ops lan865x_netdev_ops = {
     .ndo_validate_addr = eth_validate_addr,
     .ndo_eth_ioctl = lan865x_netdev_ioctl,
     .ndo_get_stats64 = lan865x_get_stats64,
+    .ndo_tx_timeout = lan865x_health_tx_timeout,
 };
 
 static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg);

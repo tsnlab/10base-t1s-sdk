@@ -61,4 +61,19 @@ enum oa_tc6_stat_id {
 extern const char oa_tc6_stat_names[OA_TC6_STAT_NUM][32];
 void oa_tc6_get_stats(struct oa_tc6 *tc6, u64 *data);
 
+/* TX stall / fatal error recovery support */
+struct oa_tc6_tx_state {
+	bool tx_pending;	/* a tx skb is waiting or partly sent */
+	u16 tx_credits;		/* TXC from the last footer */
+	bool disabled;		/* traffic disabled after a fatal error */
+};
+
+void oa_tc6_set_fatal_cb(struct oa_tc6 *tc6, void (*cb)(void *ctx), void *ctx);
+void oa_tc6_get_tx_state(struct oa_tc6 *tc6, struct oa_tc6_tx_state *st);
+int oa_tc6_read_buffer_status(struct oa_tc6 *tc6, u8 *txc, u8 *rba);
+void oa_tc6_kick(struct oa_tc6 *tc6);
+void oa_tc6_stop_traffic(struct oa_tc6 *tc6);
+int oa_tc6_hw_reinit(struct oa_tc6 *tc6);
+void oa_tc6_start_traffic(struct oa_tc6 *tc6);
+
 #endif /* OA_TC6_H */

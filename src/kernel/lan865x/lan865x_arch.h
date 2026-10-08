@@ -119,6 +119,18 @@ struct lan865x_priv {
     struct mutex hw_lock; /* monitor work vs. recovery */
     spinlock_t stats_lock;
     u64 hwstats[LAN865X_HWSTAT_NUM];
+    /* TX stall detection / recovery */
+    struct delayed_work rcv_work;
+    unsigned long rcv_flags; /* LAN865X_RCV_PENDING, LAN865X_RCV_STOPPING */
+    int rcv_reason;
+    unsigned long rcv_last; /* jiffies of the last recovery */
+    unsigned int rcv_backoff_ms;
+    bool rcv_phy_started;
+    unsigned long stall_since; /* jiffies, 0 = no stall suspected */
+    u64 stall_tftx; /* chip TFTX when the suspicion started */
+    u64 replay_host_base; /* tx_packets at the last (re)start */
+    u64 replay_chip_base; /* chip FTX at the last (re)start */
+    u64 replay_att_base; /* chip TFTX at the last (re)start */
 };
 
 struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_info);

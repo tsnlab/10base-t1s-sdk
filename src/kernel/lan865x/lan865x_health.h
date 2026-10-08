@@ -59,6 +59,15 @@ enum lan865x_hwstat_id {
 	/* driver */
 	LAN865X_SW_SATURATED,	/* polls where an 8-bit chip counter was 0xFF */
 	LAN865X_SW_POLL_ERRORS,	/* SPI errors while polling */
+	/* TX stall detection / recovery */
+	LAN865X_SW_STALL_DETECTED,	/* TXC 0 + no TX progress for tx_stall_ms */
+	LAN865X_SW_REPLAY_DETECTED,	/* chip sent more frames than the host gave it */
+	LAN865X_SW_WATCHDOG,	/* ndo_tx_timeout */
+	LAN865X_SW_FATAL,	/* oa_tc6 fatal error */
+	LAN865X_SW_KICKS,	/* credits back but no IRQ: data transfer re-run */
+	LAN865X_SW_RCV_LIGHT_OK,	/* recovered by MAC_NCR.TXEN toggle */
+	LAN865X_SW_RCV_RESET_OK,	/* recovered by MAC-PHY reset + reconfiguration */
+	LAN865X_SW_RCV_FAILED,
 	LAN865X_HWSTAT_NUM,
 };
 
@@ -70,5 +79,12 @@ void lan865x_get_stats64(struct net_device* netdev, struct rtnl_link_stats64* s)
 int lan865x_get_sset_count(struct net_device* netdev, int sset);
 void lan865x_get_strings(struct net_device* netdev, u32 sset, u8* data);
 void lan865x_get_ethtool_stats(struct net_device* netdev, struct ethtool_stats* es, u64* data);
+
+void lan865x_health_tx_timeout(struct net_device* netdev, unsigned int txqueue);
+
+/* lan865x.c: re-apply MAC address, PLCA node ID, RX filters, TX/RX enable
+ * after oa_tc6_hw_reinit()
+ */
+int lan865x_restore_hw_config(struct lan865x_priv* priv);
 
 #endif /* _LAN865X_HEALTH_H_ */
