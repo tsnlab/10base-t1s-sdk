@@ -673,3 +673,62 @@ void lan865x_get_ethtool_stats(struct net_device* netdev, struct ethtool_stats* 
     spin_unlock_bh(&priv->stats_lock);
     oa_tc6_get_stats(priv->tc6, data + LAN865X_HWSTAT_NUM);
 }
+
+/* ------------------------------------------------------------------------
+ * /sys/class/lan865x/lan865xN/regdump (0444)
+ *
+ * A snapshot of the registers needed to diagnose a TX stall without root
+ * (docs/notes/32 section 3: with the SDK nothing could be read at all).
+ * Only registers whose read has no side effect are listed: no clear-on-read
+ * statistics (those are accumulated by the driver, see ethtool -S), no
+ * MMS4 STS1/STS2, no Clause 22 BMSR (latching).  Format: "MMS:ADDR NAME
+ * VALUE" or "MMS:ADDR NAME ERR <errno>".
+ */
+static const struct {
+    u32 addr;
+    const char* name;
+} lan865x_dump_regs[] = {
+    { 0x00000000, "OA_ID" },        { 0x00000001, "OA_PHYID" },     { 0x00000002, "OA_STDCAP" },
+    { 0x00000003, "OA_RESET" },     { 0x00000004, "OA_CONFIG0" },   { 0x00000008, "OA_STATUS0" },
+    { 0x00000009, "OA_STATUS1" },   { 0x0000000B, "OA_BUFSTS" },    { 0x0000000C, "OA_IMASK0" },
+    { 0x0000000D, "OA_IMASK1" },    { 0x00010000, "MAC_NCR" },      { 0x00010001, "MAC_NCFGR" },
+    { 0x00010020, "MAC_HRB" },      { 0x00010021, "MAC_HRT" },      { 0x00010022, "MAC_SAB1" },
+    { 0x00010023, "MAC_SAT1" },     { 0x00010024, "MAC_SAB2" },     { 0x00010025, "MAC_SAT2" },
+    { 0x00010077, "MAC_TI" },       { 0x00010200, "BMGR_CTL" },     { 0x00040020, "CTRCTRL" },
+    { 0x00040036, "PRSSTS" },       { 0x00040087, "CDCTL0" },       { 0x0004CA00, "MIDVER" },
+    { 0x0004CA01, "PLCA_CTRL0" },   { 0x0004CA02, "PLCA_CTRL1" },   { 0x0004CA03, "PLCA_STS" },
+    { 0x0004CA04, "PLCA_TOTMR" },   { 0x0004CA05, "PLCA_BURST" },   { 0x000A0081, "QTXCFG" },
+    { 0x000A0082, "QRXCFG" },       { 0x000A008C, "MISC" },         { 0x000A0094, "DEVID" },
+};
+
+ssize_t lan865x_regdump(struct lan865x_priv* priv, char* buf) {
+    ssize_t n = 0;
+    u32 v;
+    int ret;
+
+    if (!priv->tc6) {
+        return -ENODEV;
+    }
+
+    for (int i = 0; i < ARRAY_SIZE(lan865x_dump_regs); i++) {
+        u32 a = lan865x_dump_regs[i].addr;
+
+        ret = oa_tc6_read_register(priv->tc6, a, &v);
+        if (ret) {
+            n += sysfs_emit_at(buf, n, "%02u:%04x %-12s ERR %d\n", a >> 16, a & 0xFFFF, lan865x_dump_regs[i].name,
+                               ret);
+        } else {
+            n += sysfs_emit_at(buf, n, "%02u:%04x %-12s 0x%08x\n", a >> 16, a & 0xFFFF, lan865x_dump_regs[i].name,
+                               v);
+        }
+    }
+    {
+        struct oa_tc6_tx_state st;
+
+        oa_tc6_get_tx_state(priv->tc6, &st);
+        n += sysfs_emit_at(buf, n, "drv footer_txc=%u tx_pending=%d traffic_disabled=%d recovery_pending=%d\n",
+                           st.tx_credits, st.tx_pending, st.disabled,
+                           test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags));
+    }
+    return n;
+}

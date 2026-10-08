@@ -55,9 +55,21 @@ static ssize_t node_id_show(struct device* dev, struct device_attribute* attr, c
 /* Define device attribute for node_id (Read Only) */
 static DEVICE_ATTR_RO(node_id);
 
+/* Side-effect free register snapshot (lan865x_health.c), world readable */
+static ssize_t regdump_show(struct device* dev, struct device_attribute* attr, char* buf) {
+    struct lan865x_priv* priv = dev_get_drvdata(dev);
+
+    if (!priv) {
+        return -ENODEV;
+    }
+    return lan865x_regdump(priv, buf);
+}
+static DEVICE_ATTR_RO(regdump);
+
 /* Define attribute group */
 static struct attribute* lan865x_attrs[] = {
     &dev_attr_node_id.attr,
+    &dev_attr_regdump.attr,
 
     /* Reserved for future attributes */
     NULL,

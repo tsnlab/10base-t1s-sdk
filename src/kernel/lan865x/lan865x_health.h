@@ -96,4 +96,6 @@ void lan865x_health_tx_timeout(struct net_device* netdev, unsigned int txqueue);
  */
 int lan865x_restore_hw_config(struct lan865x_priv* priv);
 
+ssize_t lan865x_regdump(struct lan865x_priv* priv, char* buf);
+
 #endif /* _LAN865X_HEALTH_H_ */
