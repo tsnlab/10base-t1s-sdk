@@ -173,6 +173,9 @@ static const struct ethtool_ops lan865x_ethtool_ops = {
 #ifdef FRAME_TIMESTAMP_ENABLE
     .get_ts_info = lan865x_ethtool_get_ts_info,
 #endif /* FRAME_TIMESTAMP_ENABLE */
+    .get_sset_count = lan865x_get_sset_count,
+    .get_strings = lan865x_get_strings,
+    .get_ethtool_stats = lan865x_get_ethtool_stats,
 };
 
 
@@ -492,6 +495,7 @@ static const struct net_device_ops lan865x_netdev_ops = {
     .ndo_set_mac_address = lan865x_set_mac_address,
     .ndo_validate_addr = eth_validate_addr,
     .ndo_eth_ioctl = lan865x_netdev_ioctl,
+    .ndo_get_stats64 = lan865x_get_stats64,
 };
 
 static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg);
@@ -613,6 +617,7 @@ static int lan865x_probe(struct spi_device *spi)
 
     spi_set_drvdata(spi, priv);
     INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
+    lan865x_health_init(priv);
 
     /* Initialize oa_tc6 and lan8651*/
     priv->tc6 = oa_tc6_init(spi, netdev);
@@ -672,7 +677,8 @@ static int lan865x_probe(struct spi_device *spi)
     priv->ptpdev = NULL;
 #endif /* FRAME_TIMESTAMP_ENABLE */
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
-    
+    lan865x_health_start(priv);
+
     return 0;
 
 ptp_device_init_error:
@@ -706,6 +712,7 @@ static void lan865x_remove(struct spi_device *spi)
         return;
     }
 
+    lan865x_health_stop(priv);
     kthread_stop(priv->plca_check_thread);
     cancel_work_sync(&priv->multicast_work);
 

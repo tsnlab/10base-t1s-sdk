@@ -14,6 +14,9 @@
 #include <linux/net_tstamp.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/types.h>
+#include <linux/workqueue.h>
+
+#include "lan865x_health.h"
 
 #ifdef __LAN865X_DEBUG__
 #define LAN865X_DEBUG(...) pr_debug(__VA_ARGS__)
@@ -110,6 +113,12 @@ struct lan865x_priv {
     struct cdev cdev;
     dev_t devt;
     bool cdev_added;
+
+    /* lan865x_health.c */
+    struct delayed_work mon_work;
+    struct mutex hw_lock; /* monitor work vs. recovery */
+    spinlock_t stats_lock;
+    u64 hwstats[LAN865X_HWSTAT_NUM];
 };
 
 struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_info);
