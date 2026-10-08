@@ -9,6 +9,7 @@
 #ifndef LAN865X_ARCH_H
 #define LAN865X_ARCH_H
 
+#include <linux/cdev.h>
 #include <linux/i2c.h>
 #include <linux/net_tstamp.h>
 #include <linux/ptp_clock_kernel.h>
@@ -104,6 +105,11 @@ struct lan865x_priv {
     u8 node_id;
 
     struct task_struct* plca_check_thread;
+
+    /* /dev/lan865xN register access node (LAN865X_READ_REG/WRITE_REG) */
+    struct cdev cdev;
+    dev_t devt;
+    bool cdev_added;
 };
 
 struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_info);

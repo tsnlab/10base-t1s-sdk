@@ -18,7 +18,8 @@ int lan865x_get_node_id(struct lan865x_priv* priv);
 
 int lan865x_sysfs_init(void);
 void lan865x_sysfs_exit(void);
-int lan865x_sysfs_create_device(struct lan865x_priv* priv);
+struct file_operations;
+int lan865x_sysfs_create_device(struct lan865x_priv* priv, const struct file_operations* fops);
 void lan865x_sysfs_remove_device(struct lan865x_priv* priv);
 
 #endif /* _LAN865X_SYSFS_H_ */

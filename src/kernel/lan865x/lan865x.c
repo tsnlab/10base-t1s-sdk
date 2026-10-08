@@ -501,9 +501,14 @@ static const struct file_operations lan865x_fops = {
 };
 
 static int lan865x_open(struct inode* inode, struct file* file) {
-    struct spi_device* spi = container_of(file->private_data, struct spi_device, dev);
-    file->private_data = spi;
-    return 0;
+    /* The node is backed by priv->cdev (lan865x_sysfs_create_device()).
+     * The old code did container_of(file->private_data, struct spi_device, dev)
+     * on a NULL private_data; it was never reached because no cdev existed.
+     */
+    struct lan865x_priv* priv = container_of(inode->i_cdev, struct lan865x_priv, cdev);
+
+    file->private_data = priv;
+    return nonseekable_open(inode, file);
 }
 
 static int lan865x_release(struct inode* inode, struct file* file) {
@@ -614,7 +619,7 @@ static int lan865x_probe(struct spi_device *spi)
     }
 
     /* Create sysfs device */
-    ret = lan865x_sysfs_create_device(priv);
+    ret = lan865x_sysfs_create_device(priv, &lan865x_fops);
     if (ret) {
         dev_err(&spi->dev, "Failed to create sysfs device: %d\n", ret);
         goto sysfs_create_error;
@@ -734,16 +739,23 @@ static void lan865x_remove(struct spi_device *spi)
 }
 
 static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
+    struct lan865x_priv* priv = file->private_data;
+    struct oa_tc6* tc6 = (priv && priv->tc6) ? priv->tc6 : g_tc6;
     struct lan865x_reg reg;
     int ret = 0;
 
+    if (!tc6) {
+        return -ENODEV;
+    }
+
+    /* ABI unchanged (include/linux/lan865x_ioctl.h): addr = (MMS << 16) | reg */
     switch (cmd) {
     case LAN865X_READ_REG:
         if (copy_from_user(&reg, (void __user*)arg, sizeof(reg))) {
             return -EFAULT;
         }
 
-        ret = oa_tc6_read_register(g_tc6, reg.addr, &reg.value);
+        ret = oa_tc6_read_register(tc6, reg.addr, &reg.value);
         if (ret < 0) {
             return -ENODEV;
         }
@@ -758,7 +770,7 @@ static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg
             return -EFAULT;
         }
 
-        ret = oa_tc6_write_register(g_tc6, reg.addr, reg.value);
+        ret = oa_tc6_write_register(tc6, reg.addr, reg.value);
         break;
 
     default:
