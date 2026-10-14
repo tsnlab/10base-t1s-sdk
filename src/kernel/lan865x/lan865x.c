@@ -110,11 +110,100 @@ static int lan865x_set_hw_macaddr_low_bytes(struct oa_tc6 *tc6, const u8 *mac)
     return oa_tc6_write_register(tc6, LAN865X_REG_MAC_L_SADDR1, regval);
 }
 
+/* CSMA/CD back-off seed.
+ *
+ * DS60001734F 6.4.3 (MAC Transmit Block): "The back off time is based on a
+ * pseudo random binary sequence (PRBS) generator seeded from the least
+ * significant 32 bits of the MAC address as configured in the Specific
+ * Address Bottom 1 (MAC_SAB1) register."  Note: "The Specific Address
+ * Bottom 1 register should be uniquely configured for proper CSMA/CD
+ * operation. ... two nodes may collide and retry at the exact same time if
+ * [it] is not configured or configured identically. This may result in
+ * frames being dropped due to excessive collisions."
+ *
+ * The SDK MAC is the build-time MACADDR (default d0:d1:95:30:23:00) with
+ * the DIP node ID in the low nibble of byte 5 only, so MAC_SAB1 =
+ * 0x3095d1d0 on every HAT: every LAN8651 retries in lock step, and an
+ * excessive collision drop is what triggers errata DS80001075F s4.
+ *
+ * backoff_seed=1 (default) keeps the MAC address unchanged on the wire but
+ * moves the address filter to Specific Address 2 (MAC_SAB2/SAT2) and
+ * writes a seed derived from all six MAC bytes to MAC_SAB1 only.  Writing
+ * SAB1 deactivates specific address 1 and only a SAT1 write would activate
+ * it again (DS60001734F 11.2.5), so SAB1 is used for nothing but the seed.
+ * backoff_seed=0 is the SDK behaviour (MAC in SAB1/SAT1).
+ * TODO(spec): the data sheet does not say when the PRBS samples SAB1;
+ * lan865x_reload_backoff_seed() toggles MAC_NCR.TXEN to be safe.
+ */
+#ifndef LAN865X_DEF_BACKOFF_SEED
+#define LAN865X_DEF_BACKOFF_SEED 1
+#endif
+static unsigned int backoff_seed = LAN865X_DEF_BACKOFF_SEED;
+module_param(backoff_seed, uint, 0444);
+MODULE_PARM_DESC(backoff_seed, "1 = per-node CSMA back-off seed in MAC_SAB1, MAC filter in SA2 (default); 0 = SDK behaviour");
+
+#define LAN865X_REG_MAC_L_SADDR2  0x00010024
+#define LAN865X_REG_MAC_H_SADDR2  0x00010025
+
+static u32 lan865x_backoff_seed(const u8 *mac)
+{
+    u32 h = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+
+    h ^= ((mac[5] << 8) | mac[4]) * 0x9E3779B1u;
+    /* murmur3 fmix32: every MAC bit affects every seed bit */
+    h ^= h >> 16;
+    h *= 0x85EBCA6Bu;
+    h ^= h >> 13;
+    h *= 0xC2B2AE35u;
+    h ^= h >> 16;
+
+    return h ? h : 1; /* never an all-zero PRBS seed */
+}
+
+static int lan865x_reload_backoff_seed(struct lan865x_priv *priv)
+{
+    u32 ncr;
+    int ret;
+
+    if (!backoff_seed) {
+        return 0;
+    }
+    ret = oa_tc6_read_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, &ncr);
+    if (ret || !(ncr & MAC_NET_CTL_TXEN)) {
+        return ret;
+    }
+    ret = oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, ncr & ~MAC_NET_CTL_TXEN);
+    if (ret) {
+        return ret;
+    }
+    return oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, ncr);
+}
+
 static int lan865x_set_hw_macaddr(struct lan865x_priv *priv, const u8 *mac)
 {
     int restore_ret;
     u32 regval;
     int ret;
+
+    if (backoff_seed) {
+        u32 seed = lan865x_backoff_seed(mac);
+
+        /* filter: SAB2 write deactivates, SAT2 write activates (11.2.7/8) */
+        regval = (mac[3] << 24) | (mac[2] << 16) | (mac[1] << 8) | mac[0];
+        ret = oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_L_SADDR2, regval);
+        if (ret) {
+            return ret;
+        }
+        ret = oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_H_SADDR2, (mac[5] << 8) | mac[4]);
+        if (ret) {
+            return ret;
+        }
+        ret = oa_tc6_write_register(priv->tc6, LAN865X_REG_MAC_L_SADDR1, seed);
+        if (!ret) {
+            dev_info(&priv->spi->dev, "MAC %pM in specific address 2, back-off seed MAC_SAB1=0x%08x\n", mac, seed);
+        }
+        return ret;
+    }
 
     /* Configure MAC address low bytes */
     ret = lan865x_set_hw_macaddr_low_bytes(priv->tc6, mac);
@@ -173,6 +262,9 @@ static const struct ethtool_ops lan865x_ethtool_ops = {
 #ifdef FRAME_TIMESTAMP_ENABLE
     .get_ts_info = lan865x_ethtool_get_ts_info,
 #endif /* FRAME_TIMESTAMP_ENABLE */
+    .get_sset_count = lan865x_get_sset_count,
+    .get_strings = lan865x_get_strings,
+    .get_ethtool_stats = lan865x_get_ethtool_stats,
 };
 
 
@@ -363,39 +455,12 @@ static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
 {
     struct lan865x_priv* priv = netdev_priv(netdev);
 #ifdef FRAME_TIMESTAMP_ENABLE
-    struct hwtstamp_config hwts_config = priv->tstamp_config;
-
-    struct sk_buff* cloned_skb;
     u8 ts_capture_mode = LAN865X_TIMESTAMP_ID_NONE;
 
-    if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
-
-        cloned_skb = skb_clone(skb, GFP_ATOMIC);
-        if (!cloned_skb) {
-            netdev_err(netdev, "%s: skb_clone() failed\n", __func__);
-            return -EAGAIN;
-        }
-
-        /* NOTE:
-         *	skb_clone() does not copy the user-space socket (sk) information.
-         *	However, TX timestamping requires a valid sk to queue the timestamp to the user socket.
-         *	Therefore, we manually copy the sk pointer from the original skb. */
-        cloned_skb->sk = skb->sk;
-
-        if (hwts_config.tx_type != HWTSTAMP_TX_ON) {
-            ts_capture_mode = LAN865X_TIMESTAMP_ID_NONE;
-            kfree_skb(cloned_skb);
-        } else if (is_gptp_packet(skb)) {
-            ts_capture_mode = LAN865X_TIMESTAMP_ID_GPTP;
-            priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP] = skb_get(cloned_skb);
-            skb_shinfo(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP])->tx_flags |= SKBTX_IN_PROGRESS;
-        } else {
-            ts_capture_mode = LAN865X_TIMESTAMP_ID_NORMAL;
-            priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL] = skb_get(cloned_skb);
-            skb_shinfo(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL])->tx_flags |= SKBTX_IN_PROGRESS;
-        }
+    if ((skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) && priv->tstamp_config.tx_type == HWTSTAMP_TX_ON) {
+        ts_capture_mode = lan865x_ptp_request_tx_ts(priv, skb);
     }
-    
+
     return oa_tc6_start_xmit(priv->tc6, skb, ts_capture_mode);
 #else /* FRAME_TIMESTAMP_ENABLE */
     return oa_tc6_start_xmit(priv->tc6, skb);
@@ -450,6 +515,35 @@ static int lan865x_hw_enable(struct lan865x_priv* priv) {
     return 0;
 }
 
+/* After oa_tc6_hw_reinit() (TX stall / fatal error recovery, see
+ * lan865x_health.c) the MAC-PHY is back at the init_lan865x() state: PLCA
+ * enabled with the reset node ID, no MAC address, MAC TX/RX enabled.
+ */
+int lan865x_restore_hw_config(struct lan865x_priv* priv)
+{
+    int ret;
+
+    ret = lan865x_set_nodeid(priv, priv->node_id);
+    if (ret) {
+        return ret;
+    }
+
+    ret = lan865x_set_hw_macaddr(priv, priv->netdev->dev_addr);
+    if (ret) {
+        return ret;
+    }
+    lan865x_reload_backoff_seed(priv);
+
+    /* promiscuous / multicast filter */
+    schedule_work(&priv->multicast_work);
+
+    if (!netif_running(priv->netdev)) {
+        return lan865x_hw_disable(priv);
+    }
+
+    return 0;
+}
+
 static int lan865x_net_open(struct net_device *netdev)
 {
     struct lan865x_priv* priv = netdev_priv(netdev);
@@ -463,6 +557,8 @@ static int lan865x_net_open(struct net_device *netdev)
 
     phy_start(netdev->phydev);
 
+    netif_start_queue(netdev);
+
     return 0;
 }
 
@@ -474,10 +570,11 @@ static int lan865x_netdev_ioctl(struct net_device* netdev, struct ifreq* ifr, in
     case SIOCSHWTSTAMP:
         return lan865x_set_ts_config(netdev, ifr);
     default:
-        return -EOPNOTSUPP;
+        /* SIOCGMIIPHY/SIOCGMIIREG/SIOCSMIIREG (upstream 34c21e91192a) */
+        return phy_do_ioctl_running(netdev, ifr, cmd);
     }
 #else /* FRAME_TIMESTAMP_ENABLE */
-    return -EOPNOTSUPP;
+    return phy_do_ioctl_running(netdev, ifr, cmd);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 }
 
@@ -487,7 +584,10 @@ static const struct net_device_ops lan865x_netdev_ops = {
     .ndo_start_xmit = lan865x_send_packet,
     .ndo_set_rx_mode = lan865x_set_multicast_list,
     .ndo_set_mac_address = lan865x_set_mac_address,
+    .ndo_validate_addr = eth_validate_addr,
     .ndo_eth_ioctl = lan865x_netdev_ioctl,
+    .ndo_get_stats64 = lan865x_get_stats64,
+    .ndo_tx_timeout = lan865x_health_tx_timeout,
 };
 
 static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg);
@@ -501,9 +601,14 @@ static const struct file_operations lan865x_fops = {
 };
 
 static int lan865x_open(struct inode* inode, struct file* file) {
-    struct spi_device* spi = container_of(file->private_data, struct spi_device, dev);
-    file->private_data = spi;
-    return 0;
+    /* The node is backed by priv->cdev (lan865x_sysfs_create_device()).
+     * The old code did container_of(file->private_data, struct spi_device, dev)
+     * on a NULL private_data; it was never reached because no cdev existed.
+     */
+    struct lan865x_priv* priv = container_of(inode->i_cdev, struct lan865x_priv, cdev);
+
+    file->private_data = priv;
+    return nonseekable_open(inode, file);
 }
 
 static int lan865x_release(struct inode* inode, struct file* file) {
@@ -604,6 +709,7 @@ static int lan865x_probe(struct spi_device *spi)
 
     spi_set_drvdata(spi, priv);
     INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
+    lan865x_health_init(priv);
 
     /* Initialize oa_tc6 and lan8651*/
     priv->tc6 = oa_tc6_init(spi, netdev);
@@ -614,7 +720,7 @@ static int lan865x_probe(struct spi_device *spi)
     }
 
     /* Create sysfs device */
-    ret = lan865x_sysfs_create_device(priv);
+    ret = lan865x_sysfs_create_device(priv, &lan865x_fops);
     if (ret) {
         dev_err(&spi->dev, "Failed to create sysfs device: %d\n", ret);
         goto sysfs_create_error;
@@ -641,6 +747,7 @@ static int lan865x_probe(struct spi_device *spi)
     get_defined_mac(&spi->dev, priv, mac);
     eth_hw_addr_set(netdev, mac);
     lan865x_set_hw_macaddr(priv, mac);
+    lan865x_reload_backoff_seed(priv);
 
     netdev->if_port = IF_PORT_10BASET;
     netdev->irq = spi->irq;
@@ -663,7 +770,8 @@ static int lan865x_probe(struct spi_device *spi)
     priv->ptpdev = NULL;
 #endif /* FRAME_TIMESTAMP_ENABLE */
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
-    
+    lan865x_health_start(priv);
+
     return 0;
 
 ptp_device_init_error:
@@ -676,7 +784,9 @@ sysfs_create_error:
     lan865x_sysfs_remove_device(priv);
 oa_tc6_init_error:
     g_tc6 = NULL;
-    oa_tc6_exit(priv->tc6);
+    if (priv->tc6) {
+        oa_tc6_exit(priv->tc6);
+    }
     free_netdev(netdev);
     return -ENODEV;
 }
@@ -697,6 +807,7 @@ static void lan865x_remove(struct spi_device *spi)
         return;
     }
 
+    lan865x_health_stop(priv);
     kthread_stop(priv->plca_check_thread);
     cancel_work_sync(&priv->multicast_work);
 
@@ -734,16 +845,23 @@ static void lan865x_remove(struct spi_device *spi)
 }
 
 static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg) {
+    struct lan865x_priv* priv = file->private_data;
+    struct oa_tc6* tc6 = (priv && priv->tc6) ? priv->tc6 : g_tc6;
     struct lan865x_reg reg;
     int ret = 0;
 
+    if (!tc6) {
+        return -ENODEV;
+    }
+
+    /* ABI unchanged (include/linux/lan865x_ioctl.h): addr = (MMS << 16) | reg */
     switch (cmd) {
     case LAN865X_READ_REG:
         if (copy_from_user(&reg, (void __user*)arg, sizeof(reg))) {
             return -EFAULT;
         }
 
-        ret = oa_tc6_read_register(g_tc6, reg.addr, &reg.value);
+        ret = oa_tc6_read_register(tc6, reg.addr, &reg.value);
         if (ret < 0) {
             return -ENODEV;
         }
@@ -758,7 +876,7 @@ static long lan865x_ioctl(struct file* file, unsigned int cmd, unsigned long arg
             return -EFAULT;
         }
 
-        ret = oa_tc6_write_register(g_tc6, reg.addr, reg.value);
+        ret = oa_tc6_write_register(tc6, reg.addr, reg.value);
         break;
 
     default:
