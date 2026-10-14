@@ -83,8 +83,8 @@ struct ptp_device {
     struct ptp_clock_info ptp_info;
 
     struct task_struct* ptp_thread;
-    wait_queue_head_t txts_wq; /* woken when a TX timestamp is requested */
-    spinlock_t txts_lock; /* protects lan865x_priv.waiting_txts_skb[] */
+    wait_queue_head_t txts_wq;                          /* woken when a TX timestamp is requested */
+    spinlock_t txts_lock;                               /* protects lan865x_priv.waiting_txts_skb[] */
     unsigned long txts_start[LAN865X_TIMESTAMP_ID_MAX]; /* jiffies */
 
     u32 ti_subnano_b24; // timer increase every clock (25MHz) cycle
@@ -131,10 +131,10 @@ struct lan865x_priv {
     unsigned int rcv_backoff_ms;
     bool rcv_phy_started;
     unsigned long stall_since; /* jiffies, 0 = no stall suspected */
-    u64 stall_tftx; /* chip TFTX when the suspicion started */
-    u64 replay_host_base; /* tx_packets at the last (re)start */
-    u64 replay_chip_base; /* chip FTX at the last (re)start */
-    u64 replay_att_base; /* chip TFTX at the last (re)start */
+    u64 stall_tftx;            /* chip TFTX when the suspicion started */
+    u64 replay_host_base;      /* tx_packets at the last (re)start */
+    u64 replay_chip_base;      /* chip FTX at the last (re)start */
+    u64 replay_att_base;       /* chip TFTX at the last (re)start */
     /* collision detect policy */
     int cden_cur; /* -1 = unknown (after reset) */
     int pst_ok_polls;

@@ -7,13 +7,14 @@
  */
 
 #include "lan865x_sysfs.h"
-#include "lan865x_arch.h"
 
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+
+#include "lan865x_arch.h"
 
 #define LAN865X_CLASS_NAME "lan865x"
 #define LAN865X_MAX_DEVS 4

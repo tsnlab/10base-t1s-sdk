@@ -114,7 +114,7 @@ u8 lan865x_ptp_request_tx_ts(struct lan865x_priv* priv, struct sk_buff* skb) {
 }
 
 static void lan865x_complete_txts(struct lan865x_priv* priv, int id) {
-    struct skb_shared_hwtstamps skb_hwts = { 0 };
+    struct skb_shared_hwtstamps skb_hwts = {0};
     struct sk_buff* skb;
     timestamp_t tx_ts;
 
@@ -145,19 +145,18 @@ static int lan865x_ptp_thread_handler(void* data) {
     struct lan865x_priv* priv = dev_get_drvdata(ptpdev->dev);
     static const struct {
         int id;
-        u32 avail; /* OA_STATUS0 */
+        u32 avail;  /* OA_STATUS0 */
         u32 missed; /* OA_STATUS1 */
     } slot[] = {
-        { LAN865X_TIMESTAMP_ID_GPTP, TS_A_MASK, TS_MISSED_A_MASK },
-        { LAN865X_TIMESTAMP_ID_NORMAL, TS_B_MASK, TS_MISSED_B_MASK },
+        {LAN865X_TIMESTAMP_ID_GPTP, TS_A_MASK, TS_MISSED_A_MASK},
+        {LAN865X_TIMESTAMP_ID_NORMAL, TS_B_MASK, TS_MISSED_B_MASK},
     };
     u32 st[2]; /* OA_STATUS0, OA_STATUS1 */
     u32 clr0, clr1;
 
     while (!kthread_should_stop()) {
         if (!lan865x_txts_pending(priv)) {
-            wait_event_interruptible_timeout(ptpdev->txts_wq, lan865x_txts_pending(priv) || kthread_should_stop(),
-                                             HZ);
+            wait_event_interruptible_timeout(ptpdev->txts_wq, lan865x_txts_pending(priv) || kthread_should_stop(), HZ);
             continue;
         }
 
@@ -315,16 +314,16 @@ static int lan865x_ptp_gettimex64(struct ptp_clock_info* ptp_info, struct timesp
 
     *res_ts = ns_to_timespec64(timestamp);
 
-   /*
-    * NOTE:
-    * Since the LAN865x device communicates over SPI, consecutive register accesses
-    * without sufficient delay can cause SPI buffering and transaction backlog.
-    * This may introduce additional latency, resulting in a large time offset
-    * between the host clock and the device clock (e.g., observed via phc2sys).
-    *
-    * Therefore, appropriate inter-access delays are required to ensure
-    * stable SPI transactions and accurate time synchronization.
-    */
+    /*
+     * NOTE:
+     * Since the LAN865x device communicates over SPI, consecutive register accesses
+     * without sufficient delay can cause SPI buffering and transaction backlog.
+     * This may introduce additional latency, resulting in a large time offset
+     * between the host clock and the device clock (e.g., observed via phc2sys).
+     *
+     * Therefore, appropriate inter-access delays are required to ensure
+     * stable SPI transactions and accurate time synchronization.
+     */
     udelay(500);
 
     LAN865X_DEBUG("%s: timestamp = %llu, res_ts = %llu.%llu\n", __func__, timestamp, res_ts->tv_sec, res_ts->tv_nsec);

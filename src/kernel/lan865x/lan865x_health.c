@@ -9,7 +9,6 @@
  */
 
 #include "lan865x_health.h"
-#include "lan865x_arch.h"
 
 #include <linux/delay.h>
 #include <linux/jiffies.h>
@@ -18,6 +17,8 @@
 #include <linux/phy.h>
 #include <linux/rtnetlink.h>
 #include <linux/workqueue.h>
+
+#include "lan865x_arch.h"
 
 /* MMS1 STATS0..STATS12 (0x0208..0x0214), all clear-on-read (11.2.26-38).
  * Note: 6.5.2 of the data sheet gives 0x288.. for the block; the register
@@ -161,10 +162,10 @@ static void lan865x_poll_hw_stats(struct lan865x_priv* priv) {
     ret = oa_tc6_read_register(priv->tc6, LAN865X_MMS4_STS1, &sts1);
     if (!ret) {
         static const u8 bit2id[16] = {
-            [0] = LAN865X_HW_STS1_DEC5B,   [1] = LAN865X_HW_STS1_ESDERR, [2] = LAN865X_HW_STS1_PLCASYM,
-            [3] = LAN865X_HW_STS1_UNCRS,   [4] = LAN865X_HW_STS1_BCNBFTO, [5] = LAN865X_HW_STS1_UNEXPB,
-            [6] = LAN865X_HW_STS1_RXINTO,  [7] = LAN865X_HW_STS1_EMPCYC, [9] = LAN865X_HW_STS1_TXJAB,
-            [10] = LAN865X_HW_STS1_TXCOL,  [11] = LAN865X_HW_STS1_PSTC,
+            [0] = LAN865X_HW_STS1_DEC5B,  [1] = LAN865X_HW_STS1_ESDERR,  [2] = LAN865X_HW_STS1_PLCASYM,
+            [3] = LAN865X_HW_STS1_UNCRS,  [4] = LAN865X_HW_STS1_BCNBFTO, [5] = LAN865X_HW_STS1_UNEXPB,
+            [6] = LAN865X_HW_STS1_RXINTO, [7] = LAN865X_HW_STS1_EMPCYC,  [9] = LAN865X_HW_STS1_TXJAB,
+            [10] = LAN865X_HW_STS1_TXCOL, [11] = LAN865X_HW_STS1_PSTC,
         };
 
         spin_lock_bh(&priv->stats_lock);
@@ -228,14 +229,16 @@ MODULE_PARM_DESC(tx_stall_ms, "TX stall detection time in ms (also the netdev wa
 #endif
 static unsigned int recovery_mode = LAN865X_DEF_RECOVERY_MODE;
 module_param(recovery_mode, uint, 0644);
-MODULE_PARM_DESC(recovery_mode, "TX stall/fatal error recovery: 0 = log only, 1 = TXEN toggle then reset, 2 = reset (default)");
+MODULE_PARM_DESC(recovery_mode,
+                 "TX stall/fatal error recovery: 0 = log only, 1 = TXEN toggle then reset, 2 = reset (default)");
 
 #ifndef LAN865X_DEF_REPLAY_SLACK
 #define LAN865X_DEF_REPLAY_SLACK 64
 #endif
 static unsigned int replay_slack = LAN865X_DEF_REPLAY_SLACK;
 module_param(replay_slack, uint, 0644);
-MODULE_PARM_DESC(replay_slack, "Replay detection: chip FTX may exceed host TX frames by this much (0 = off), default 64");
+MODULE_PARM_DESC(replay_slack,
+                 "Replay detection: chip FTX may exceed host TX frames by this much (0 = off), default 64");
 
 #define LAN865X_RCV_PENDING 0
 #define LAN865X_RCV_STOPPING 1
@@ -332,8 +335,8 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
      * (95 vs 56) before TXNER: the chip re-sending old frames.
      */
     if (replay_slack && (chip > host + replay_slack || att > host + replay_slack)) {
-        netdev_err(priv->netdev, "chip transmitted %llu frames OK / %llu attempted, host handed over %llu\n", chip,
-                   att, host);
+        netdev_err(priv->netdev, "chip transmitted %llu frames OK / %llu attempted, host handed over %llu\n", chip, att,
+                   host);
         priv->hwstats[LAN865X_SW_REPLAY_DETECTED]++;
         lan865x_trigger_recovery(priv, LAN865X_RCV_REPLAY);
         return;
@@ -378,7 +381,7 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
  */
 static void lan865x_dump_state(struct lan865x_priv* priv, const char* when) {
     struct oa_tc6_tx_state st;
-    u32 st01[2] = { 0 }, bufsts = 0, ncr = 0, plca = 0, cd = 0;
+    u32 st01[2] = {0}, bufsts = 0, ncr = 0, plca = 0, cd = 0;
 
     oa_tc6_get_tx_state(priv->tc6, &st);
     oa_tc6_read_registers(priv->tc6, 0x00000008, st01, 2); /* OA_STATUS0/1 */
@@ -524,7 +527,8 @@ out:
 #endif
 static unsigned int cden_mode = LAN865X_DEF_CDEN_MODE;
 module_param(cden_mode, uint, 0644);
-MODULE_PARM_DESC(cden_mode, "Collision detect: 0 = always on (SDK), 1 = off while PLCA enabled, 2 = off while PLCA enabled and PST=1 (default)");
+MODULE_PARM_DESC(cden_mode, "Collision detect: 0 = always on (SDK), 1 = off while PLCA enabled, 2 = off while PLCA "
+                            "enabled and PST=1 (default)");
 
 #define LAN865X_MMS4_PLCA_CTRL0 0x0004CA01 /* CTRL0, CTRL1, STS consecutive */
 #define LAN865X_PLCA_CTRL0_EN BIT(15)
@@ -655,8 +659,7 @@ void lan865x_get_stats64(struct net_device* netdev, struct rtnl_link_stats64* s)
     s->collisions += h[LAN865X_HW_CORTX];
     s->tx_aborted_errors += h[LAN865X_HW_XCOL];
     s->tx_fifo_errors += h[LAN865X_HW_TXFUR] + h[LAN865X_HW_TXBUR];
-    tx_err = h[LAN865X_HW_XCOL] + h[LAN865X_HW_TXFUR] + h[LAN865X_HW_TXBUR] + h[LAN865X_HW_TXAIE] +
-             h[LAN865X_HW_TXAEE];
+    tx_err = h[LAN865X_HW_XCOL] + h[LAN865X_HW_TXFUR] + h[LAN865X_HW_TXBUR] + h[LAN865X_HW_TXAIE] + h[LAN865X_HW_TXAEE];
     s->tx_errors += tx_err;
 
     s->rx_crc_errors += h[LAN865X_HW_FCSE];
@@ -665,8 +668,8 @@ void lan865x_get_stats64(struct net_device* netdev, struct rtnl_link_stats64* s)
     s->rx_over_errors += h[LAN865X_HW_RXBOVR];
     s->rx_fifo_errors += h[LAN865X_HW_RXFOVR];
     s->rx_missed_errors += h[LAN865X_HW_RXRER];
-    rx_err = h[LAN865X_HW_FCSE] + h[LAN865X_HW_RXSE] + h[LAN865X_HW_LFER] + h[LAN865X_HW_OFRX] +
-             h[LAN865X_HW_UFRX] + h[LAN865X_HW_RXBOVR] + h[LAN865X_HW_RXFOVR] + h[LAN865X_HW_RXRER];
+    rx_err = h[LAN865X_HW_FCSE] + h[LAN865X_HW_RXSE] + h[LAN865X_HW_LFER] + h[LAN865X_HW_OFRX] + h[LAN865X_HW_UFRX] +
+             h[LAN865X_HW_RXBOVR] + h[LAN865X_HW_RXFOVR] + h[LAN865X_HW_RXRER];
     s->rx_errors += rx_err;
     spin_unlock_bh(&priv->stats_lock);
 }
@@ -715,17 +718,15 @@ static const struct {
     u32 addr;
     const char* name;
 } lan865x_dump_regs[] = {
-    { 0x00000000, "OA_ID" },        { 0x00000001, "OA_PHYID" },     { 0x00000002, "OA_STDCAP" },
-    { 0x00000003, "OA_RESET" },     { 0x00000004, "OA_CONFIG0" },   { 0x00000008, "OA_STATUS0" },
-    { 0x00000009, "OA_STATUS1" },   { 0x0000000B, "OA_BUFSTS" },    { 0x0000000C, "OA_IMASK0" },
-    { 0x0000000D, "OA_IMASK1" },    { 0x00010000, "MAC_NCR" },      { 0x00010001, "MAC_NCFGR" },
-    { 0x00010020, "MAC_HRB" },      { 0x00010021, "MAC_HRT" },      { 0x00010022, "MAC_SAB1" },
-    { 0x00010023, "MAC_SAT1" },     { 0x00010024, "MAC_SAB2" },     { 0x00010025, "MAC_SAT2" },
-    { 0x00010077, "MAC_TI" },       { 0x00010200, "BMGR_CTL" },     { 0x00040020, "CTRCTRL" },
-    { 0x00040036, "PRSSTS" },       { 0x00040087, "CDCTL0" },       { 0x0004CA00, "MIDVER" },
-    { 0x0004CA01, "PLCA_CTRL0" },   { 0x0004CA02, "PLCA_CTRL1" },   { 0x0004CA03, "PLCA_STS" },
-    { 0x0004CA04, "PLCA_TOTMR" },   { 0x0004CA05, "PLCA_BURST" },   { 0x000A0081, "QTXCFG" },
-    { 0x000A0082, "QRXCFG" },       { 0x000A008C, "MISC" },         { 0x000A0094, "DEVID" },
+    {0x00000000, "OA_ID"},      {0x00000001, "OA_PHYID"},   {0x00000002, "OA_STDCAP"},  {0x00000003, "OA_RESET"},
+    {0x00000004, "OA_CONFIG0"}, {0x00000008, "OA_STATUS0"}, {0x00000009, "OA_STATUS1"}, {0x0000000B, "OA_BUFSTS"},
+    {0x0000000C, "OA_IMASK0"},  {0x0000000D, "OA_IMASK1"},  {0x00010000, "MAC_NCR"},    {0x00010001, "MAC_NCFGR"},
+    {0x00010020, "MAC_HRB"},    {0x00010021, "MAC_HRT"},    {0x00010022, "MAC_SAB1"},   {0x00010023, "MAC_SAT1"},
+    {0x00010024, "MAC_SAB2"},   {0x00010025, "MAC_SAT2"},   {0x00010077, "MAC_TI"},     {0x00010200, "BMGR_CTL"},
+    {0x00040020, "CTRCTRL"},    {0x00040036, "PRSSTS"},     {0x00040087, "CDCTL0"},     {0x0004CA00, "MIDVER"},
+    {0x0004CA01, "PLCA_CTRL0"}, {0x0004CA02, "PLCA_CTRL1"}, {0x0004CA03, "PLCA_STS"},   {0x0004CA04, "PLCA_TOTMR"},
+    {0x0004CA05, "PLCA_BURST"}, {0x000A0081, "QTXCFG"},     {0x000A0082, "QRXCFG"},     {0x000A008C, "MISC"},
+    {0x000A0094, "DEVID"},
 };
 
 ssize_t lan865x_regdump(struct lan865x_priv* priv, char* buf) {
@@ -742,11 +743,9 @@ ssize_t lan865x_regdump(struct lan865x_priv* priv, char* buf) {
 
         ret = oa_tc6_read_register(priv->tc6, a, &v);
         if (ret) {
-            n += sysfs_emit_at(buf, n, "%02u:%04x %-12s ERR %d\n", a >> 16, a & 0xFFFF, lan865x_dump_regs[i].name,
-                               ret);
+            n += sysfs_emit_at(buf, n, "%02u:%04x %-12s ERR %d\n", a >> 16, a & 0xFFFF, lan865x_dump_regs[i].name, ret);
         } else {
-            n += sysfs_emit_at(buf, n, "%02u:%04x %-12s 0x%08x\n", a >> 16, a & 0xFFFF, lan865x_dump_regs[i].name,
-                               v);
+            n += sysfs_emit_at(buf, n, "%02u:%04x %-12s 0x%08x\n", a >> 16, a & 0xFFFF, lan865x_dump_regs[i].name, v);
         }
     }
     {
@@ -754,8 +753,7 @@ ssize_t lan865x_regdump(struct lan865x_priv* priv, char* buf) {
 
         oa_tc6_get_tx_state(priv->tc6, &st);
         n += sysfs_emit_at(buf, n, "drv footer_txc=%u tx_pending=%d traffic_disabled=%d recovery_pending=%d\n",
-                           st.tx_credits, st.tx_pending, st.disabled,
-                           test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags));
+                           st.tx_credits, st.tx_pending, st.disabled, test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags));
     }
     return n;
 }
