@@ -70,7 +70,12 @@ DRIVER_INCLUDES := -I$(CURDIR)/$(INCLUDE_DIR) \
                   -I$(KERNEL_DIR)/drivers/spi
 
 # Common compile flags
+# TIMESTAMP=0 builds without frame timestamps (no PTP clock, no 8-byte RX
+# timestamp strip, no 4-byte RX tail strip).  Default 1 = SDK behaviour.
+TIMESTAMP ?= 1
+ifeq ($(TIMESTAMP),1)
 EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE #-DDEBUG -D__LAN865X_DEBUG__
+endif
 
 # Build-time defaults of the module parameters, for setups where insmod
 # cannot be given arguments.  Example:

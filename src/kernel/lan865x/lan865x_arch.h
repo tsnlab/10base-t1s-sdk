@@ -24,7 +24,10 @@
 #define LAN865X_DEBUG(...)
 #endif // __LAN865X_DEBUG__
 
-#include <linux/oa_tc6.h>
+/* SDK copy, not <linux/oa_tc6.h>: Linux >= 6.12 ships a different mainline
+ * header of that name and kbuild searches the kernel include tree first.
+ */
+#include "../../../include/linux/oa_tc6.h"
 
 #define LAN865X_BUFFER_SIZE (1560)
 

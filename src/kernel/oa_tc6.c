@@ -5,7 +5,7 @@
  * Author: Parthiban Veerasooran <parthiban.veerasooran@microchip.com>
  */
 
-#include "linux/oa_tc6.h"
+#include "../../include/linux/oa_tc6.h" /* SDK copy (see lan865x_arch.h) */
 #ifdef FRAME_TIMESTAMP_ENABLE
 #include "lan865x/lan865x_arch.h"
 #include <linux/ptp_classify.h>

@@ -26,6 +26,15 @@
 #include "lan865x_arch.h"
 #include "lan865x_sysfs.h"
 #include "t1s_hat_fxl6408.h"
+#include <linux/version.h>
+
+/* Linux 6.11 renamed the ethtool get_ts_info argument type */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+#define LAN865X_TS_INFO struct kernel_ethtool_ts_info
+#else
+#define LAN865X_TS_INFO struct ethtool_ts_info
+#endif
+
 #ifdef FRAME_TIMESTAMP_ENABLE
 #include "lan865x_ptp.h"
 #include <linux/net_tstamp.h>
@@ -230,7 +239,7 @@ static int lan865x_set_hw_macaddr(struct lan865x_priv *priv, const u8 *mac)
 }
 
 #ifdef FRAME_TIMESTAMP_ENABLE
-static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool_ts_info* ts_info) {
+static int lan865x_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INFO* ts_info) {
     struct lan865x_priv* priv = (struct lan865x_priv*)netdev_priv(netdev);
 
     if (!priv->ptpdev) {
@@ -251,7 +260,7 @@ static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool
     return 0;
 }
 #else /* FRAME_TIMESTAMP_ENABLE */
-static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool_ts_info* ts_info) {
+static int lan865x_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INFO* ts_info) {
     return -EOPNOTSUPP;
 }
 #endif /* FRAME_TIMESTAMP_ENABLE */
