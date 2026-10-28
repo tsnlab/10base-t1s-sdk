@@ -263,10 +263,6 @@ static int lan865x_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INF
 
     return 0;
 }
-#else /* FRAME_TIMESTAMP_ENABLE */
-static int lan865x_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INFO* ts_info) {
-    return -EOPNOTSUPP;
-}
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
 static const struct ethtool_ops lan865x_ethtool_ops = {
@@ -823,8 +819,10 @@ static int lan865x_probe(struct spi_device *spi)
 
     return 0;
 
+#ifdef FRAME_TIMESTAMP_ENABLE
 ptp_device_init_error:
     unregister_netdev(netdev);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 register_netdev_error:
 zero_align_receive_frame_enable_error:
 t1s_hat_fxl6408_init_error:
