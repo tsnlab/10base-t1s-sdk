@@ -186,6 +186,12 @@ struct oa_tc6 {
 	u32 irq_type_orig; /* trigger type of the IRQ mapping before request */
 	void (*fatal_cb)(void *ctx);
 	void *fatal_ctx;
+	/* MAC-PHY specific part of the init / reinit sequence (after the
+	 * TC6 software reset and error IRQ unmask, before the data
+	 * transfer is enabled).  init_lan865x() unless the MAC driver gave
+	 * another one to oa_tc6_init_chip().
+	 */
+	int (*chip_init)(struct oa_tc6 *tc6);
 	u64 stats[OA_TC6_STAT_NUM];
 #ifdef FRAME_TIMESTAMP_ENABLE
 	u8 ongoing_tx_ts_capture_mode;
@@ -2052,6 +2058,23 @@ int init_lan865x(struct oa_tc6 *tc6)
  */
 struct oa_tc6 *oa_tc6_init(struct spi_device *spi, struct net_device *netdev)
 {
+	return oa_tc6_init_chip(spi, netdev, init_lan865x);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_init);
+
+/**
+ * oa_tc6_init_chip - oa_tc6_init() with a MAC-PHY specific init step.
+ * @spi: device with which data will be exchanged.
+ * @netdev: network device interface structure.
+ * @chip_init: replaces init_lan865x() in the init and the reinit sequence
+ *	(NULL = init_lan865x()).  Only TC6 standard steps stay common.
+ *
+ * Return: as oa_tc6_init().
+ */
+struct oa_tc6 *oa_tc6_init_chip(struct spi_device *spi,
+				struct net_device *netdev,
+				int (*chip_init)(struct oa_tc6 *tc6))
+{
 	struct oa_tc6 *tc6;
 	int ret;
 
@@ -2061,6 +2084,7 @@ struct oa_tc6 *oa_tc6_init(struct spi_device *spi, struct net_device *netdev)
 
 	tc6->spi = spi;
 	tc6->netdev = netdev;
+	tc6->chip_init = chip_init ? chip_init : init_lan865x;
 	SET_NETDEV_DEV(netdev, &spi->dev);
 	mutex_init(&tc6->spi_ctrl_lock);
 	spin_lock_init(&tc6->tx_skb_lock);
@@ -2111,7 +2135,7 @@ struct oa_tc6 *oa_tc6_init(struct spi_device *spi, struct net_device *netdev)
 		return NULL;
 	}
 
-	ret = init_lan865x(tc6);
+	ret = tc6->chip_init(tc6);
 	if (ret) {
 		dev_err(&tc6->spi->dev, "Failed to init_lan865x: %d\n", ret);
 		goto phy_exit;
@@ -2169,7 +2193,7 @@ phy_exit:
 	oa_tc6_phy_exit(tc6);
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(oa_tc6_init);
+EXPORT_SYMBOL_GPL(oa_tc6_init_chip);
 
 /**
  * oa_tc6_exit - exit function.
@@ -2271,7 +2295,7 @@ int oa_tc6_hw_reinit(struct oa_tc6 *tc6)
 	ret = oa_tc6_unmask_macphy_error_interrupts(tc6);
 	if (ret)
 		return ret;
-	ret = init_lan865x(tc6);
+	ret = tc6->chip_init(tc6);
 	if (ret)
 		return ret;
 	ret = oa_tc6_zero_align_receive_frame_enable(tc6);
