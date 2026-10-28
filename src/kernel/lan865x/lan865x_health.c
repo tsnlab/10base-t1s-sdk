@@ -8,6 +8,7 @@
  * Copyright (c) 2026 TSN Lab
  */
 
+#include "t1s_oaspi.h"
 #include "lan865x_health.h"
 
 #include <linux/delay.h>
@@ -386,9 +387,12 @@ static void lan865x_dump_state(struct lan865x_priv* priv, const char* when) {
     oa_tc6_get_tx_state(priv->tc6, &st);
     oa_tc6_read_registers(priv->tc6, 0x00000008, st01, 2); /* OA_STATUS0/1 */
     oa_tc6_read_register(priv->tc6, 0x0000000B, &bufsts);  /* OA_BUFSTS */
-    oa_tc6_read_register(priv->tc6, LAN865X_MMS1_MAC_NCR, &ncr);
+    /* t1s: NCR shows MAC_CTRL, no CDCTL0 */
+    oa_tc6_read_register(priv->tc6, T1S_IS(priv) ? T1S_MMS1_MAC_CTRL : LAN865X_MMS1_MAC_NCR, &ncr);
     oa_tc6_read_register(priv->tc6, LAN865X_MMS4_PLCA_STS, &plca);
-    oa_tc6_read_register(priv->tc6, LAN865X_MMS4_CDCTL0, &cd);
+    if (!T1S_IS(priv)) {
+        oa_tc6_read_register(priv->tc6, LAN865X_MMS4_CDCTL0, &cd);
+    }
     netdev_warn(priv->netdev,
                 "%s: STATUS0=0x%08x STATUS1=0x%08x BUFSTS=0x%08x (TXC=%u RBA=%u) NCR=0x%08x PLCA_STS=0x%04x "
                 "CDCTL0=0x%04x | footer TXC=%u pending=%d | XCOL=%llu TFTX=%llu FTX=%llu CORTX=%llu tx_packets=%lu\n",
@@ -401,6 +405,9 @@ static bool lan865x_try_txen_toggle(struct lan865x_priv* priv) {
     u32 ncr;
     u8 txc = 0, rba;
 
+    if (T1S_IS(priv)) {
+        return false; /* LAN865x errata step; t1s goes straight to the reset */
+    }
     if (oa_tc6_read_register(priv->tc6, LAN865X_MMS1_MAC_NCR, &ncr)) {
         return false;
     }
@@ -595,9 +602,11 @@ static void lan865x_mon_work(struct work_struct* work) {
     struct lan865x_priv* priv = container_of(to_delayed_work(work), struct lan865x_priv, mon_work);
 
     mutex_lock(&priv->hw_lock);
-    lan865x_poll_hw_stats(priv);
+    if (!T1S_IS(priv)) {
+        lan865x_poll_hw_stats(priv); /* LAN865x MMS1 STATS / MMS4 STS1 */
+    }
     lan865x_check_tx(priv);
-    if (!test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags)) {
+    if (!T1S_IS(priv) && !test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags)) {
         lan865x_apply_cden(priv);
     }
     mutex_unlock(&priv->hw_lock);
@@ -737,6 +746,10 @@ ssize_t lan865x_regdump(struct lan865x_priv* priv, char* buf) {
     if (!priv->tc6) {
         return -ENODEV;
     }
+    if (T1S_IS(priv)) {
+        n = t1s_oaspi_regdump(priv, buf);
+        goto drv_state;
+    }
 
     for (int i = 0; i < ARRAY_SIZE(lan865x_dump_regs); i++) {
         u32 a = lan865x_dump_regs[i].addr;
@@ -748,7 +761,7 @@ ssize_t lan865x_regdump(struct lan865x_priv* priv, char* buf) {
             n += sysfs_emit_at(buf, n, "%02u:%04x %-12s 0x%08x\n", a >> 16, a & 0xFFFF, lan865x_dump_regs[i].name, v);
         }
     }
-    {
+drv_state: {
         struct oa_tc6_tx_state st;
 
         oa_tc6_get_tx_state(priv->tc6, &st);

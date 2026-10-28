@@ -126,6 +126,7 @@ $(BUILD_DIR)/Makefile: FORCE
     ../$(SRC_DIR)/lan865x_sysfs.o\
     ../$(SRC_DIR)/lan865x_health.o\
     ../$(SRC_DIR)/t1s_hat_fxl6408.o\
+    ../$(SRC_DIR)/t1s_oaspi.o\
     ../src/kernel/oa_tc6.o\
 " >> $@
 	@echo "ccflags-y := $(DRIVER_INCLUDES) $(EXTRA_CFLAGS)" >> $@
