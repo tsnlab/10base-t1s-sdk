@@ -26,6 +26,16 @@
 #include "lan865x_arch.h"
 #include "lan865x_sysfs.h"
 #include "t1s_hat_fxl6408.h"
+#include "t1s_oaspi.h"
+#include <linux/version.h>
+
+/* Linux 6.11 renamed the ethtool get_ts_info argument type */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+#define LAN865X_TS_INFO struct kernel_ethtool_ts_info
+#else
+#define LAN865X_TS_INFO struct ethtool_ts_info
+#endif
+
 #ifdef FRAME_TIMESTAMP_ENABLE
 #include "lan865x_ptp.h"
 #include <linux/net_tstamp.h>
@@ -165,8 +175,8 @@ static int lan865x_reload_backoff_seed(struct lan865x_priv *priv)
     u32 ncr;
     int ret;
 
-    if (!backoff_seed) {
-        return 0;
+    if (!backoff_seed || T1S_IS(priv)) {
+        return 0; /* t1s: no back-off seed register */
     }
     ret = oa_tc6_read_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, &ncr);
     if (ret || !(ncr & MAC_NET_CTL_TXEN)) {
@@ -185,6 +195,9 @@ static int lan865x_set_hw_macaddr(struct lan865x_priv *priv, const u8 *mac)
     u32 regval;
     int ret;
 
+    if (T1S_IS(priv)) {
+        return t1s_oaspi_set_macaddr(priv, mac);
+    }
     if (backoff_seed) {
         u32 seed = lan865x_backoff_seed(mac);
 
@@ -230,7 +243,7 @@ static int lan865x_set_hw_macaddr(struct lan865x_priv *priv, const u8 *mac)
 }
 
 #ifdef FRAME_TIMESTAMP_ENABLE
-static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool_ts_info* ts_info) {
+static int lan865x_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INFO* ts_info) {
     struct lan865x_priv* priv = (struct lan865x_priv*)netdev_priv(netdev);
 
     if (!priv->ptpdev) {
@@ -249,10 +262,6 @@ static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool
                           BIT(HWTSTAMP_FILTER_PTP_V2_L2_SYNC) | BIT(HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ);
 
     return 0;
-}
-#else /* FRAME_TIMESTAMP_ENABLE */
-static int lan865x_ethtool_get_ts_info(struct net_device* netdev, struct ethtool_ts_info* ts_info) {
-    return -EOPNOTSUPP;
 }
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
@@ -391,6 +400,10 @@ static void lan865x_multicast_work_handler(struct work_struct *work)
     u32 regval = 0;
     int ret;
 
+    if (T1S_IS(priv)) {
+        t1s_oaspi_set_rx_mode(priv);
+        return;
+    }
     if (priv->netdev->flags & IFF_PROMISC) {
         /* Enabling promiscuous mode */
         regval |= MAC_NET_CFG_PROMISCUOUS_MODE;
@@ -470,6 +483,10 @@ static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
 static int lan865x_hw_disable(struct lan865x_priv* priv) {
     u32 regval;
 
+    if (T1S_IS(priv)) {
+        return t1s_oaspi_mac_enable(priv, false);
+    }
+
     if (oa_tc6_read_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, &regval)) {
         return -ENODEV;
     }
@@ -501,6 +518,10 @@ static int lan865x_net_close(struct net_device *netdev)
 
 static int lan865x_hw_enable(struct lan865x_priv* priv) {
     u32 regval;
+
+    if (T1S_IS(priv)) {
+        return t1s_oaspi_mac_enable(priv, true);
+    }
 
     if (oa_tc6_read_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, &regval)) {
         return -ENODEV;
@@ -639,10 +660,18 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
     }
 #endif
 
-    /* Read input status register */
-    u8 val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
-    u8 node_id = (val & 0xF0) >> 4;
-    priv->node_id = node_id;
+    u8 node_id;
+
+    if (T1S_IS(priv)) {
+        /* no FXL6408 / DIP switch: node id from DT (t1s_oaspi_probe_cfg) */
+        node_id = priv->node_id;
+    } else {
+        /* Read input status register */
+        u8 val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
+
+        node_id = (val & 0xF0) >> 4;
+        priv->node_id = node_id;
+    }
     lan865x_set_nodeid(priv, node_id);
 
 #ifdef ENABLE_DIPSWITCH
@@ -665,6 +694,15 @@ static int lan865x_probe(struct spi_device *spi)
     struct gpio_desc* lan8651_phy_irq_gpiod;
     int lan8651_phy_irq;
     int ret;
+    /* LAN865X_CHIP_T1S for "tsnlab,t1s-oaspi", else 0 (LAN865x) */
+    u8 chip = (u8)(uintptr_t)spi_get_device_match_data(spi);
+
+#ifdef FRAME_TIMESTAMP_ENABLE
+    if (chip == LAN865X_CHIP_T1S) {
+        dev_err(&spi->dev, "t1s-oaspi needs a TIMESTAMP=0 build (no LAN865x PTP / RX timestamp layout)\n");
+        return -EOPNOTSUPP;
+    }
+#endif
 
 #if defined(CONFIG_RPI4)
     (void)lan8651_phy_irq_gpiod;
@@ -678,7 +716,8 @@ static int lan865x_probe(struct spi_device *spi)
     }
 #elif defined(CONFIG_RPI5)
     /* Get lan8651 phy irq from device tree*/
-    lan8651_phy_irq_gpiod = devm_gpiod_get(&spi->dev, "lan8651irq", GPIOD_IN);
+    /* t1s: irq-gpios (TC6 IRQn, active low), LAN865x: lan8651irq-gpios */
+    lan8651_phy_irq_gpiod = devm_gpiod_get(&spi->dev, chip == LAN865X_CHIP_T1S ? "irq" : "lan8651irq", GPIOD_IN);
     if (IS_ERR(lan8651_phy_irq_gpiod)) {
         ret = PTR_ERR(lan8651_phy_irq_gpiod);
         dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
@@ -692,13 +731,6 @@ static int lan865x_probe(struct spi_device *spi)
     }
 #endif
 
-    /* Set spi mode */
-    spi->mode = SPI_MODE_3;
-    spi->mode &= ~SPI_CS_HIGH;
-    spi->bits_per_word = 8;
-    spi->max_speed_hz = 25000000;
-    spi->irq = lan8651_phy_irq;
-
     netdev = alloc_etherdev(sizeof(*priv));
     if (!netdev)
         return -ENOMEM;
@@ -706,13 +738,25 @@ static int lan865x_probe(struct spi_device *spi)
     priv = netdev_priv(netdev);
     priv->netdev = netdev;
     priv->spi = spi;
+    priv->chip = chip;
+
+    if (chip == LAN865X_CHIP_T1S) {
+        t1s_oaspi_probe_cfg(priv, spi); /* SPI mode 0 + clock, node id */
+    } else {
+        /* Set spi mode */
+        spi->mode = SPI_MODE_3;
+        spi->mode &= ~SPI_CS_HIGH;
+        spi->bits_per_word = 8;
+        spi->max_speed_hz = 25000000;
+    }
+    spi->irq = lan8651_phy_irq;
 
     spi_set_drvdata(spi, priv);
     INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
     lan865x_health_init(priv);
 
     /* Initialize oa_tc6 and lan8651*/
-    priv->tc6 = oa_tc6_init(spi, netdev);
+    priv->tc6 = oa_tc6_init_chip(spi, netdev, chip == LAN865X_CHIP_T1S ? t1s_oaspi_chip_init : NULL);
     g_tc6 = priv->tc6;
     if (!priv->tc6) {
         dev_err(&spi->dev, "oa_tc6_init failed\n");
@@ -725,7 +769,8 @@ static int lan865x_probe(struct spi_device *spi)
         dev_err(&spi->dev, "Failed to create sysfs device: %d\n", ret);
         goto sysfs_create_error;
     }
-    ret = t1s_hat_fxl6408_init(priv, &spi->dev);
+    /* t1s: no FXL6408 on TSN-HAT R2 */
+    ret = chip == LAN865X_CHIP_T1S ? 0 : t1s_hat_fxl6408_init(priv, &spi->dev);
     if (ret) {
         dev_err(&spi->dev, "Failed to initialize node ID updater: %d\n", ret);
         goto t1s_hat_fxl6408_init_error;
@@ -774,8 +819,10 @@ static int lan865x_probe(struct spi_device *spi)
 
     return 0;
 
+#ifdef FRAME_TIMESTAMP_ENABLE
 ptp_device_init_error:
     unregister_netdev(netdev);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 register_netdev_error:
 zero_align_receive_frame_enable_error:
 t1s_hat_fxl6408_init_error:
@@ -891,6 +938,7 @@ static const struct spi_device_id lan865x_ids[] = {
     { "lan8650", 0 },
     { "lan8651", 0 },
     { "spidev",  0 },
+    { "t1s-oaspi", LAN865X_CHIP_T1S },
     { },
 };
 MODULE_DEVICE_TABLE(spi, lan865x_ids);
@@ -898,6 +946,7 @@ MODULE_DEVICE_TABLE(spi, lan865x_ids);
 static const struct of_device_id lan865x_of_match[] = {
     { .compatible = "microchip,lan8650" },
     { .compatible = "microchip,lan8651" },
+    { .compatible = "tsnlab,t1s-oaspi", .data = (void*)LAN865X_CHIP_T1S },
     { }
 };
 MODULE_DEVICE_TABLE(of, lan865x_of_match);

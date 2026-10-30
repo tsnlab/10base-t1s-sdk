@@ -24,7 +24,10 @@
 #define LAN865X_DEBUG(...)
 #endif // __LAN865X_DEBUG__
 
-#include <linux/oa_tc6.h>
+/* SDK copy, not <linux/oa_tc6.h>: Linux >= 6.12 ships a different mainline
+ * header of that name and kbuild searches the kernel include tree first.
+ */
+#include "../../../include/linux/oa_tc6.h"
 
 #define LAN865X_BUFFER_SIZE (1560)
 
@@ -110,6 +113,7 @@ struct lan865x_priv {
     struct mutex fxl6408_lock;
     bool fxl6408_initialized;
     u8 node_id;
+    u8 chip; /* LAN865X_CHIP_* (t1s_oaspi.h), from the DT match */
 
     struct task_struct* plca_check_thread;
 

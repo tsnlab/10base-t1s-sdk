@@ -5,7 +5,7 @@
  * Author: Parthiban Veerasooran <parthiban.veerasooran@microchip.com>
  */
 
-#include "linux/oa_tc6.h"
+#include "../../include/linux/oa_tc6.h" /* SDK copy (see lan865x_arch.h) */
 #ifdef FRAME_TIMESTAMP_ENABLE
 #include "lan865x/lan865x_arch.h"
 #include <linux/ptp_classify.h>
@@ -124,6 +124,7 @@
 #define OA_TC6_DATA_FOOTER_DATA_VALID BIT(21)
 #define OA_TC6_DATA_FOOTER_START_VALID BIT(20)
 #define OA_TC6_DATA_FOOTER_START_WORD_OFFSET GENMASK(19, 16)
+#define OA_TC6_DATA_FOOTER_FRAME_DROP BIT(15)
 #define OA_TC6_DATA_FOOTER_END_VALID BIT(14)
 #define OA_TC6_DATA_FOOTER_END_BYTE_OFFSET GENMASK(13, 8)
 #define OA_TC6_DATA_FOOTER_TX_CREDITS GENMASK(5, 1)
@@ -180,12 +181,19 @@ struct oa_tc6 {
 	u8 rx_chunks_available;
 	bool wait_until_start_valid;
 	bool int_flag;
+	u8 footer_par_err_run; /* consecutive footers with a parity error */
 	bool disable_traffic;
 	bool suspended; /* data path parked by oa_tc6_stop_traffic() */
 	unsigned long irq_flags; /* OA_TC6_IRQ_OFF */
 	u32 irq_type_orig; /* trigger type of the IRQ mapping before request */
 	void (*fatal_cb)(void *ctx);
 	void *fatal_ctx;
+	/* MAC-PHY specific part of the init / reinit sequence (after the
+	 * TC6 software reset and error IRQ unmask, before the data
+	 * transfer is enabled).  init_lan865x() unless the MAC driver gave
+	 * another one to oa_tc6_init_chip().
+	 */
+	int (*chip_init)(struct oa_tc6 *tc6);
 	u64 stats[OA_TC6_STAT_NUM];
 #ifdef FRAME_TIMESTAMP_ENABLE
 	u8 ongoing_tx_ts_capture_mode;
@@ -732,6 +740,25 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 // 	return oa_tc6_write_register(tc6, OA_TC6_REG_STATUS0, regval);
 // }
 
+/* Minimum CSn-high time between SPI transactions (TC6 v1.1 resync_timer,
+ * 8.4: implementation defined).  200 ns covers the TSN Lab T1S MAC-PHY
+ * (160 ns, tools/oaspi_drv/README.md in the t1s repository); raise it for a
+ * MAC-PHY that needs more.
+ */
+static unsigned int cs_inactive_ns = 200;
+module_param(cs_inactive_ns, uint, 0444);
+MODULE_PARM_DESC(cs_inactive_ns, "Minimum CSn-high time between SPI transactions in ns (TC6 resync_timer), default 200");
+
+/* A configured spi_delay in ns (0 for units that do not give a time) */
+static u32 oa_tc6_cs_inactive_ns(const struct spi_delay *d)
+{
+	if (d->unit == SPI_DELAY_UNIT_NSECS)
+		return d->value;
+	if (d->unit == SPI_DELAY_UNIT_USECS)
+		return d->value * 1000;
+	return 0;
+}
+
 /* err_irq=1 (default): unmask the error sources below so that they set the
  * footer EXST bit and assert IRQ_N.  err_irq=0 keeps the SDK behaviour up to
  * dbaae29b (all error sources masked; errors pass silently).
@@ -762,6 +789,7 @@ const char oa_tc6_stat_names[OA_TC6_STAT_NUM][32] = {
 	[OA_TC6_STAT_FOOTER_HDRB] = "oa_footer_header_bad",
 	[OA_TC6_STAT_FOOTER_UNSYNC] = "oa_footer_unsync",
 	[OA_TC6_STAT_FATAL] = "oa_fatal_errors",
+	[OA_TC6_STAT_FOOTER_PARITY] = "oa_footer_parity_errors",
 };
 EXPORT_SYMBOL_GPL(oa_tc6_stat_names);
 
@@ -1327,6 +1355,12 @@ static int oa_tc6_prcs_rx_chunk_payload(struct oa_tc6 *tc6, u8 *data,
 		FIELD_GET(OA_TC6_DATA_FOOTER_END_BYTE_OFFSET, footer);
 	bool start_valid = FIELD_GET(OA_TC6_DATA_FOOTER_START_VALID, footer);
 	bool end_valid = FIELD_GET(OA_TC6_DATA_FOOTER_END_VALID, footer);
+	/* TC6 v1.1 7.3.7: FD (valid with EV only) - the frame ending in this
+	 * chunk is to be dropped (cut-through frame the MAC rejected, or a
+	 * frame the MAC-PHY terminated after a header error, 7.5.1).
+	 */
+	bool frame_drop = end_valid &&
+			  FIELD_GET(OA_TC6_DATA_FOOTER_FRAME_DROP, footer);
 	u16 size;
 
 	/* Restart the new rx frame after receiving rx buffer overflow error */
@@ -1338,6 +1372,11 @@ static int oa_tc6_prcs_rx_chunk_payload(struct oa_tc6 *tc6, u8 *data,
 
 	/* Process the chunk with complete rx frame */
 	if (start_valid && end_valid && start_byte_offset < end_byte_offset) {
+		if (frame_drop) {
+			oa_tc6_cleanup_ongoing_rx_skb(tc6);
+			tc6->netdev->stats.rx_dropped++;
+			return 0;
+		}
 		size = end_byte_offset + 1 - start_byte_offset;
 		return oa_tc6_prcs_complete_rx_frame(
 			tc6, &data[start_byte_offset], size);
@@ -1352,6 +1391,10 @@ static int oa_tc6_prcs_rx_chunk_payload(struct oa_tc6 *tc6, u8 *data,
 
 	/* Process the chunk with only rx frame end */
 	if (end_valid && !start_valid) {
+		if (frame_drop) {
+			oa_tc6_cleanup_ongoing_rx_skb(tc6);
+			return 0;
+		}
 		size = end_byte_offset + 1;
 		return oa_tc6_prcs_rx_frame_end(tc6, data, size);
 	}
@@ -1364,7 +1407,9 @@ static int oa_tc6_prcs_rx_chunk_payload(struct oa_tc6 *tc6, u8 *data,
 		 * possibility of getting an end valid of a previously
 		 * incomplete rx frame along with the new rx frame start valid.
 		 */
-		if (tc6->rx_skb) {
+		if (tc6->rx_skb && frame_drop) {
+			oa_tc6_cleanup_ongoing_rx_skb(tc6);
+		} else if (tc6->rx_skb) {
 			size = end_byte_offset + 1;
 			oa_tc6_prcs_rx_frame_end(tc6, data, size);
 
@@ -1396,6 +1441,12 @@ static u32 oa_tc6_get_rx_chunk_footer(struct oa_tc6 *tc6, u16 footer_offset)
 	return be32_to_cpu(footer);
 }
 
+/* Consecutive receive footers with a parity error after which the SPI link
+ * is taken as broken (stuck MISO, wrong SPI mode): fatal, the MAC driver
+ * resets the MAC-PHY.
+ */
+#define OA_TC6_FOOTER_PARITY_ERR_MAX 8
+
 static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 {
 	u16 no_of_rx_chunks = length / OA_TC6_CHUNK_SIZE;
@@ -1408,6 +1459,32 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 		/* Last 4 bytes in each received chunk consist footer info */
 		footer = oa_tc6_get_rx_chunk_footer(
 			tc6, i * OA_TC6_CHUNK_SIZE + OA_TC6_CHUNK_PAYLOAD_SIZE);
+
+		/* TC6 v1.1 7.3.7 / 8.5.2: the footer carries odd parity.  A
+		 * footer with a parity error (bit error on MISO) has no field
+		 * that can be trusted: do not take its TXC / RCA / status,
+		 * drop the receive frame this chunk belongs to (wait for the
+		 * next start of frame) and ask for a fresh footer with another
+		 * (empty) data chunk.
+		 */
+		if (oa_tc6_get_parity(footer)) {
+			tc6->stats[OA_TC6_STAT_FOOTER_PARITY]++;
+			if (++tc6->footer_par_err_run >=
+			    OA_TC6_FOOTER_PARITY_ERR_MAX) {
+				netdev_err(tc6->netdev,
+					   "%u receive footers in a row with a parity error\n",
+					   tc6->footer_par_err_run);
+				tc6->footer_par_err_run = 0;
+				return -EIO;
+			}
+			tc6->tx_credits = 0;
+			tc6->rx_chunks_available = 0;
+			tc6->int_flag = true;
+			oa_tc6_look_for_new_frame(tc6);
+			retry = true;
+			continue;
+		}
+		tc6->footer_par_err_run = 0;
 
 		ret = oa_tc6_process_rx_chunk_footer(tc6, footer);
 		if (ret) {
@@ -2052,6 +2129,23 @@ int init_lan865x(struct oa_tc6 *tc6)
  */
 struct oa_tc6 *oa_tc6_init(struct spi_device *spi, struct net_device *netdev)
 {
+	return oa_tc6_init_chip(spi, netdev, init_lan865x);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_init);
+
+/**
+ * oa_tc6_init_chip - oa_tc6_init() with a MAC-PHY specific init step.
+ * @spi: device with which data will be exchanged.
+ * @netdev: network device interface structure.
+ * @chip_init: replaces init_lan865x() in the init and the reinit sequence
+ *	(NULL = init_lan865x()).  Only TC6 standard steps stay common.
+ *
+ * Return: as oa_tc6_init().
+ */
+struct oa_tc6 *oa_tc6_init_chip(struct spi_device *spi,
+				struct net_device *netdev,
+				int (*chip_init)(struct oa_tc6 *tc6))
+{
 	struct oa_tc6 *tc6;
 	int ret;
 
@@ -2061,12 +2155,26 @@ struct oa_tc6 *oa_tc6_init(struct spi_device *spi, struct net_device *netdev)
 
 	tc6->spi = spi;
 	tc6->netdev = netdev;
+	tc6->chip_init = chip_init ? chip_init : init_lan865x;
 	SET_NETDEV_DEV(netdev, &spi->dev);
 	mutex_init(&tc6->spi_ctrl_lock);
 	spin_lock_init(&tc6->tx_skb_lock);
 
 	/* Set the SPI controller to pump at realtime priority */
 	tc6->spi->rt = true;
+
+	/* OPEN Alliance TC6 v1.1 7.2, 7.5.2, 8.4: CSn has to stay deasserted
+	 * for at least the MAC-PHY's resync_timer between transactions (data
+	 * <-> control switches, and after a loss of framing the next
+	 * transaction is jammed otherwise).  The value is implementation
+	 * defined; ask the SPI core (spi_set_cs()) for a minimum CSn-high
+	 * time instead of relying on the controller's own gap.  A longer
+	 * delay given by DT / the MAC driver is kept.
+	 */
+	if (oa_tc6_cs_inactive_ns(&tc6->spi->cs_inactive) < cs_inactive_ns) {
+		tc6->spi->cs_inactive.value = cs_inactive_ns;
+		tc6->spi->cs_inactive.unit = SPI_DELAY_UNIT_NSECS;
+	}
 	if (spi_setup(tc6->spi) < 0)
 		return NULL;
 
@@ -2111,7 +2219,7 @@ struct oa_tc6 *oa_tc6_init(struct spi_device *spi, struct net_device *netdev)
 		return NULL;
 	}
 
-	ret = init_lan865x(tc6);
+	ret = tc6->chip_init(tc6);
 	if (ret) {
 		dev_err(&tc6->spi->dev, "Failed to init_lan865x: %d\n", ret);
 		goto phy_exit;
@@ -2169,7 +2277,7 @@ phy_exit:
 	oa_tc6_phy_exit(tc6);
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(oa_tc6_init);
+EXPORT_SYMBOL_GPL(oa_tc6_init_chip);
 
 /**
  * oa_tc6_exit - exit function.
@@ -2271,7 +2379,7 @@ int oa_tc6_hw_reinit(struct oa_tc6 *tc6)
 	ret = oa_tc6_unmask_macphy_error_interrupts(tc6);
 	if (ret)
 		return ret;
-	ret = init_lan865x(tc6);
+	ret = tc6->chip_init(tc6);
 	if (ret)
 		return ret;
 	ret = oa_tc6_zero_align_receive_frame_enable(tc6);

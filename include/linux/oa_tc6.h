@@ -16,6 +16,8 @@
 struct oa_tc6;
 
 struct oa_tc6* oa_tc6_init(struct spi_device* spi, struct net_device* netdev);
+/* chip_init replaces init_lan865x() in init and reinit (NULL = init_lan865x()) */
+struct oa_tc6* oa_tc6_init_chip(struct spi_device* spi, struct net_device* netdev, int (*chip_init)(struct oa_tc6* tc6));
 void oa_tc6_exit(struct oa_tc6* tc6);
 int oa_tc6_write_register(struct oa_tc6* tc6, u32 address, u32 value);
 int oa_tc6_write_registers(struct oa_tc6* tc6, u32 address, u32 value[], u8 length);
@@ -53,6 +55,7 @@ enum oa_tc6_stat_id {
     OA_TC6_STAT_FOOTER_HDRB,   /* footer HDRB: chip got a bad header */
     OA_TC6_STAT_FOOTER_UNSYNC, /* footer SYNC = 0: chip lost config */
     OA_TC6_STAT_FATAL,         /* fatal errors (traffic disabled) */
+    OA_TC6_STAT_FOOTER_PARITY, /* receive footer with a parity error (MISO) */
     OA_TC6_STAT_NUM,
 };
 
