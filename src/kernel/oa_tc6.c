@@ -181,6 +181,7 @@ struct oa_tc6 {
 	u8 rx_chunks_available;
 	bool wait_until_start_valid;
 	bool int_flag;
+	u8 footer_par_err_run; /* consecutive footers with a parity error */
 	bool disable_traffic;
 	bool suspended; /* data path parked by oa_tc6_stop_traffic() */
 	unsigned long irq_flags; /* OA_TC6_IRQ_OFF */
@@ -788,6 +789,7 @@ const char oa_tc6_stat_names[OA_TC6_STAT_NUM][32] = {
 	[OA_TC6_STAT_FOOTER_HDRB] = "oa_footer_header_bad",
 	[OA_TC6_STAT_FOOTER_UNSYNC] = "oa_footer_unsync",
 	[OA_TC6_STAT_FATAL] = "oa_fatal_errors",
+	[OA_TC6_STAT_FOOTER_PARITY] = "oa_footer_parity_errors",
 };
 EXPORT_SYMBOL_GPL(oa_tc6_stat_names);
 
@@ -1439,6 +1441,12 @@ static u32 oa_tc6_get_rx_chunk_footer(struct oa_tc6 *tc6, u16 footer_offset)
 	return be32_to_cpu(footer);
 }
 
+/* Consecutive receive footers with a parity error after which the SPI link
+ * is taken as broken (stuck MISO, wrong SPI mode): fatal, the MAC driver
+ * resets the MAC-PHY.
+ */
+#define OA_TC6_FOOTER_PARITY_ERR_MAX 8
+
 static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 {
 	u16 no_of_rx_chunks = length / OA_TC6_CHUNK_SIZE;
@@ -1451,6 +1459,32 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 		/* Last 4 bytes in each received chunk consist footer info */
 		footer = oa_tc6_get_rx_chunk_footer(
 			tc6, i * OA_TC6_CHUNK_SIZE + OA_TC6_CHUNK_PAYLOAD_SIZE);
+
+		/* TC6 v1.1 7.3.7 / 8.5.2: the footer carries odd parity.  A
+		 * footer with a parity error (bit error on MISO) has no field
+		 * that can be trusted: do not take its TXC / RCA / status,
+		 * drop the receive frame this chunk belongs to (wait for the
+		 * next start of frame) and ask for a fresh footer with another
+		 * (empty) data chunk.
+		 */
+		if (oa_tc6_get_parity(footer)) {
+			tc6->stats[OA_TC6_STAT_FOOTER_PARITY]++;
+			if (++tc6->footer_par_err_run >=
+			    OA_TC6_FOOTER_PARITY_ERR_MAX) {
+				netdev_err(tc6->netdev,
+					   "%u receive footers in a row with a parity error\n",
+					   tc6->footer_par_err_run);
+				tc6->footer_par_err_run = 0;
+				return -EIO;
+			}
+			tc6->tx_credits = 0;
+			tc6->rx_chunks_available = 0;
+			tc6->int_flag = true;
+			oa_tc6_look_for_new_frame(tc6);
+			retry = true;
+			continue;
+		}
+		tc6->footer_par_err_run = 0;
 
 		ret = oa_tc6_process_rx_chunk_footer(tc6, footer);
 		if (ret) {

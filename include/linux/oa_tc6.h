@@ -55,6 +55,7 @@ enum oa_tc6_stat_id {
     OA_TC6_STAT_FOOTER_HDRB,   /* footer HDRB: chip got a bad header */
     OA_TC6_STAT_FOOTER_UNSYNC, /* footer SYNC = 0: chip lost config */
     OA_TC6_STAT_FATAL,         /* fatal errors (traffic disabled) */
+    OA_TC6_STAT_FOOTER_PARITY, /* receive footer with a parity error (MISO) */
     OA_TC6_STAT_NUM,
 };
 
