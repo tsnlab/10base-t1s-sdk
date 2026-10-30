@@ -2315,6 +2315,13 @@ EXPORT_SYMBOL_GPL(oa_tc6_exit);
  * silently stops returning TX credits (errata DS80001075F s4).
  */
 
+/* The net_device given to oa_tc6_init_chip() (for the MAC driver's chip_init hook) */
+struct net_device *oa_tc6_get_netdev(struct oa_tc6 *tc6)
+{
+	return tc6->netdev;
+}
+EXPORT_SYMBOL_GPL(oa_tc6_get_netdev);
+
 void oa_tc6_set_fatal_cb(struct oa_tc6 *tc6, void (*cb)(void *ctx), void *ctx)
 {
 	tc6->fatal_ctx = ctx;

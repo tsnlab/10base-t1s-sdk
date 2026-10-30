@@ -69,6 +69,7 @@ struct oa_tc6_tx_state {
     bool disabled;   /* traffic disabled after a fatal error */
 };
 
+struct net_device* oa_tc6_get_netdev(struct oa_tc6* tc6);
 void oa_tc6_set_fatal_cb(struct oa_tc6* tc6, void (*cb)(void* ctx), void* ctx);
 void oa_tc6_get_tx_state(struct oa_tc6* tc6, struct oa_tc6_tx_state* st);
 int oa_tc6_read_buffer_status(struct oa_tc6* tc6, u8* txc, u8* rba);
