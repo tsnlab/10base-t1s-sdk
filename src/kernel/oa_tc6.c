@@ -738,6 +738,25 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 // 	return oa_tc6_write_register(tc6, OA_TC6_REG_STATUS0, regval);
 // }
 
+/* Minimum CSn-high time between SPI transactions (TC6 v1.1 resync_timer,
+ * 8.4: implementation defined).  200 ns covers the TSN Lab T1S MAC-PHY
+ * (160 ns, tools/oaspi_drv/README.md in the t1s repository); raise it for a
+ * MAC-PHY that needs more.
+ */
+static unsigned int cs_inactive_ns = 200;
+module_param(cs_inactive_ns, uint, 0444);
+MODULE_PARM_DESC(cs_inactive_ns, "Minimum CSn-high time between SPI transactions in ns (TC6 resync_timer), default 200");
+
+/* A configured spi_delay in ns (0 for units that do not give a time) */
+static u32 oa_tc6_cs_inactive_ns(const struct spi_delay *d)
+{
+	if (d->unit == SPI_DELAY_UNIT_NSECS)
+		return d->value;
+	if (d->unit == SPI_DELAY_UNIT_USECS)
+		return d->value * 1000;
+	return 0;
+}
+
 /* err_irq=1 (default): unmask the error sources below so that they set the
  * footer EXST bit and assert IRQ_N.  err_irq=0 keeps the SDK behaviour up to
  * dbaae29b (all error sources masked; errors pass silently).
@@ -2091,6 +2110,19 @@ struct oa_tc6 *oa_tc6_init_chip(struct spi_device *spi,
 
 	/* Set the SPI controller to pump at realtime priority */
 	tc6->spi->rt = true;
+
+	/* OPEN Alliance TC6 v1.1 7.2, 7.5.2, 8.4: CSn has to stay deasserted
+	 * for at least the MAC-PHY's resync_timer between transactions (data
+	 * <-> control switches, and after a loss of framing the next
+	 * transaction is jammed otherwise).  The value is implementation
+	 * defined; ask the SPI core (spi_set_cs()) for a minimum CSn-high
+	 * time instead of relying on the controller's own gap.  A longer
+	 * delay given by DT / the MAC driver is kept.
+	 */
+	if (oa_tc6_cs_inactive_ns(&tc6->spi->cs_inactive) < cs_inactive_ns) {
+		tc6->spi->cs_inactive.value = cs_inactive_ns;
+		tc6->spi->cs_inactive.unit = SPI_DELAY_UNIT_NSECS;
+	}
 	if (spi_setup(tc6->spi) < 0)
 		return NULL;
 
