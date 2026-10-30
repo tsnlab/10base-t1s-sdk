@@ -678,6 +678,7 @@ static int oa_tc6_read_status0(struct oa_tc6 *tc6)
 
 static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 {
+	u32 st0;
 #if defined(CONFIG_RPI4)
 	u32 regval = RESET_SWRESET;
 	int ret;
@@ -689,6 +690,16 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 	pr_info("oa_tc6_sw_reset_macphy: STATUS0=0x%08x\n", regval);
 	regval = RESET_SWRESET;
 #endif /* CONFIG_RPI4 or CONFIG_RPI5 */
+
+	/* TC6 v1.1 9.2.4.2 / 9.2.8.8: RESETC stays set until the host writes
+	 * a 1 to it.  Clear one still set from an earlier reset (power-on,
+	 * RESET_N, a previous SWRESET) first, so that the RESETC polled below
+	 * can only come from this software reset - otherwise a MAC-PHY that
+	 * takes longer to reset is configured while it is still resetting.
+	 */
+	if (!oa_tc6_read_register(tc6, OA_TC6_REG_STATUS0, &st0) &&
+	    (st0 & STATUS0_RESETC))
+		oa_tc6_write_register(tc6, OA_TC6_REG_STATUS0, STATUS0_RESETC);
 
 	ret = oa_tc6_write_register(tc6, OA_TC6_REG_RESET, regval);
 	if (ret) {
@@ -2303,6 +2314,13 @@ EXPORT_SYMBOL_GPL(oa_tc6_exit);
  * dead until the driver is reloaded, and nothing detects a MAC-PHY that
  * silently stops returning TX credits (errata DS80001075F s4).
  */
+
+/* The net_device given to oa_tc6_init_chip() (for the MAC driver's chip_init hook) */
+struct net_device *oa_tc6_get_netdev(struct oa_tc6 *tc6)
+{
+	return tc6->netdev;
+}
+EXPORT_SYMBOL_GPL(oa_tc6_get_netdev);
 
 void oa_tc6_set_fatal_cb(struct oa_tc6 *tc6, void (*cb)(void *ctx), void *ctx)
 {

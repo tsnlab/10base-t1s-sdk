@@ -544,16 +544,21 @@ int lan865x_restore_hw_config(struct lan865x_priv* priv)
 {
     int ret;
 
-    ret = lan865x_set_nodeid(priv, priv->node_id);
-    if (ret) {
-        return ret;
-    }
+    /* t1s: node id and MAC address already written by t1s_oaspi_chip_init()
+     * in oa_tc6_hw_reinit(), before CONFIG0.SYNC (TC6 v1.1 7.6)
+     */
+    if (!T1S_IS(priv)) {
+        ret = lan865x_set_nodeid(priv, priv->node_id);
+        if (ret) {
+            return ret;
+        }
 
-    ret = lan865x_set_hw_macaddr(priv, priv->netdev->dev_addr);
-    if (ret) {
-        return ret;
+        ret = lan865x_set_hw_macaddr(priv, priv->netdev->dev_addr);
+        if (ret) {
+            return ret;
+        }
+        lan865x_reload_backoff_seed(priv);
     }
-    lan865x_reload_backoff_seed(priv);
 
     /* promiscuous / multicast filter */
     schedule_work(&priv->multicast_work);
@@ -672,7 +677,12 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
         node_id = (val & 0xF0) >> 4;
         priv->node_id = node_id;
     }
-    lan865x_set_nodeid(priv, node_id);
+    /* t1s: written by t1s_oaspi_chip_init() before CONFIG0.SYNC (TC6 7.6);
+     * this runs before oa_tc6_init_chip() there, without SPI access.
+     */
+    if (!T1S_IS(priv)) {
+        lan865x_set_nodeid(priv, node_id);
+    }
 
 #ifdef ENABLE_DIPSWITCH
     {
@@ -755,6 +765,17 @@ static int lan865x_probe(struct spi_device *spi)
     INIT_WORK(&priv->multicast_work, lan865x_multicast_work_handler);
     lan865x_health_init(priv);
 
+    u8 mac[ETH_ALEN];
+
+    /* t1s: the MAC address (and the PLCA node id from DT) are known before
+     * oa_tc6_init_chip(); t1s_oaspi_chip_init() writes them, and ZARFE,
+     * before CONFIG0.SYNC (TC6 v1.1 7.6).
+     */
+    if (chip == LAN865X_CHIP_T1S) {
+        get_defined_mac(&spi->dev, priv, mac);
+        eth_hw_addr_set(netdev, mac);
+    }
+
     /* Initialize oa_tc6 and lan8651*/
     priv->tc6 = oa_tc6_init_chip(spi, netdev, chip == LAN865X_CHIP_T1S ? t1s_oaspi_chip_init : NULL);
     g_tc6 = priv->tc6;
@@ -782,17 +803,18 @@ static int lan865x_probe(struct spi_device *spi)
         goto t1s_hat_fxl6408_init_error;
     }
 
-    ret = oa_tc6_zero_align_receive_frame_enable(priv->tc6);
-    if (ret) {
-        dev_err(&spi->dev, "Failed to set ZARFE: %d\n", ret);
-        goto zero_align_receive_frame_enable_error;
-    }
+    if (chip != LAN865X_CHIP_T1S) {
+        ret = oa_tc6_zero_align_receive_frame_enable(priv->tc6);
+        if (ret) {
+            dev_err(&spi->dev, "Failed to set ZARFE: %d\n", ret);
+            goto zero_align_receive_frame_enable_error;
+        }
 
-    u8 mac[ETH_ALEN];
-    get_defined_mac(&spi->dev, priv, mac);
-    eth_hw_addr_set(netdev, mac);
-    lan865x_set_hw_macaddr(priv, mac);
-    lan865x_reload_backoff_seed(priv);
+        get_defined_mac(&spi->dev, priv, mac);
+        eth_hw_addr_set(netdev, mac);
+        lan865x_set_hw_macaddr(priv, mac);
+        lan865x_reload_backoff_seed(priv);
+    }
 
     netdev->if_port = IF_PORT_10BASET;
     netdev->irq = spi->irq;

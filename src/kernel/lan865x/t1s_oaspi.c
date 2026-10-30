@@ -38,12 +38,14 @@
 
 /* TC6 MMS0 (OPEN Alliance TC6 v1.1 9.2) */
 #define T1S_TC6_CONFIG0 0x00000004
-#define T1S_TC6_CONFIG0_SYNC BIT(15)
+#define T1S_TC6_CONFIG0_ZARFE BIT(12)
 #define T1S_TC6_STATUS0 0x00000008
 
 /* standard PLCA (OA PLCA management registers, MMS4 = MMD 31) */
 #define T1S_MMS4_PLCA_CTRL0 0x0004CA01
 #define T1S_PLCA_CTRL0_EN BIT(15)
+#define T1S_MMS4_PLCA_CTRL1 0x0004CA02
+#define T1S_PLCA_NODE_COUNT 8 /* PLCA_CTRL1[15:8], as lan865x_set_nodeid() */
 
 static unsigned int t1s_spi_hz;
 module_param(t1s_spi_hz, uint, 0444);
@@ -66,8 +68,28 @@ int t1s_oaspi_probe_cfg(struct lan865x_priv* priv, struct spi_device* spi) {
     return 0;
 }
 
-/* Replaces init_lan865x(): TC6 standard steps + this MAC only. */
+static int t1s_write_macaddr(struct oa_tc6* tc6, const u8* mac) {
+    u32 lo = (mac[2] << 24) | (mac[3] << 16) | (mac[4] << 8) | mac[5];
+    u32 hi = (mac[0] << 8) | mac[1];
+    int ret;
+
+    ret = oa_tc6_write_register(tc6, T1S_MMS1_MAC_ADDR_L, lo);
+    if (ret) {
+        return ret;
+    }
+    return oa_tc6_write_register(tc6, T1S_MMS1_MAC_ADDR_H, hi);
+}
+
+/* Replaces init_lan865x(): TC6 standard steps + this MAC only.
+ * TC6 v1.1 7.6: the MAC-PHY is configured before CONFIG0.SYNC is set (by
+ * oa_tc6_enable_data_transfer() after this hook): PLCA node id before PLCA
+ * enable, MAC address, zero-aligned receive frames.  Also the recovery path
+ * (oa_tc6_hw_reinit()), so the node id and MAC address are never at their
+ * reset values while the MAC-PHY is synchronized.
+ */
 int t1s_oaspi_chip_init(struct oa_tc6* tc6) {
+    struct net_device* nd = oa_tc6_get_netdev(tc6);
+    struct lan865x_priv* priv = netdev_priv(nd);
     u32 v;
     int ret;
 
@@ -81,10 +103,22 @@ int t1s_oaspi_chip_init(struct oa_tc6* tc6) {
         return ret;
     }
 
-    /* same as the LAN865x path: PLCA enabled, node id set by the probe */
+    /* PLCA node id (DT) first, then PLCA enabled */
+    ret = oa_tc6_write_register(tc6, T1S_MMS4_PLCA_CTRL1, (T1S_PLCA_NODE_COUNT << 8) | priv->node_id);
+    if (ret) {
+        return ret;
+    }
     ret = oa_tc6_write_register(tc6, T1S_MMS4_PLCA_CTRL0, T1S_PLCA_CTRL0_EN);
     if (ret) {
         return ret;
+    }
+
+    /* MAC address (netdev: set by the probe, or changed since, before a recovery) */
+    if (is_valid_ether_addr(nd->dev_addr)) {
+        ret = t1s_write_macaddr(tc6, nd->dev_addr);
+        if (ret) {
+            return ret;
+        }
     }
 
     /* same as LAN865x NCR = TXEN | RXEN, NCFGR = no promiscuous */
@@ -98,12 +132,12 @@ int t1s_oaspi_chip_init(struct oa_tc6* tc6) {
         return ret;
     }
 
-    /* CONFIG0.SYNC; FTSE/FTSS stay 0 (TIMESTAMP=0 build) */
+    /* CONFIG0.ZARFE; SYNC is set by oa_tc6 after this hook, FTSE/FTSS stay 0 (TIMESTAMP=0 build) */
     ret = oa_tc6_read_register(tc6, T1S_TC6_CONFIG0, &v);
     if (ret) {
         return ret;
     }
-    ret = oa_tc6_write_register(tc6, T1S_TC6_CONFIG0, v | T1S_TC6_CONFIG0_SYNC);
+    ret = oa_tc6_write_register(tc6, T1S_TC6_CONFIG0, v | T1S_TC6_CONFIG0_ZARFE);
     if (ret) {
         return ret;
     }
@@ -116,15 +150,7 @@ int t1s_oaspi_chip_init(struct oa_tc6* tc6) {
 }
 
 int t1s_oaspi_set_macaddr(struct lan865x_priv* priv, const u8* mac) {
-    u32 lo = (mac[2] << 24) | (mac[3] << 16) | (mac[4] << 8) | mac[5];
-    u32 hi = (mac[0] << 8) | mac[1];
-    int ret;
-
-    ret = oa_tc6_write_register(priv->tc6, T1S_MMS1_MAC_ADDR_L, lo);
-    if (ret) {
-        return ret;
-    }
-    return oa_tc6_write_register(priv->tc6, T1S_MMS1_MAC_ADDR_H, hi);
+    return t1s_write_macaddr(priv->tc6, mac);
 }
 
 int t1s_oaspi_mac_enable(struct lan865x_priv* priv, bool en) {
