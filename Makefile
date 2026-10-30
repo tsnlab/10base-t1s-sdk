@@ -72,6 +72,14 @@ DRIVER_INCLUDES := -I$(CURDIR)/$(INCLUDE_DIR) \
 # Common compile flags
 EXTRA_CFLAGS += -DFRAME_TIMESTAMP_ENABLE #-DDEBUG -D__LAN865X_DEBUG__
 
+# Build-time defaults of the module parameters, for setups where insmod
+# cannot be given arguments.  Example:
+#   make BOARD=rpi4 LAN865X_DEFS="-DLAN865X_DEF_CDEN_MODE=0 -DLAN865X_DEF_RECOVERY_MODE=1"
+# Available: LAN865X_DEF_ERR_IRQ, _LOFE_IRQ, _STATS_MS, _TX_STALL_MS, _RECOVERY_MODE,
+# _REPLAY_SLACK, _CDEN_MODE, _BACKOFF_SEED, _PTP_POLL_US, _PTP_TS_TIMEOUT_MS
+LAN865X_DEFS ?=
+EXTRA_CFLAGS += $(LAN865X_DEFS)
+
 # ========================
 #  Build Targets
 # ========================
@@ -111,6 +119,7 @@ $(BUILD_DIR)/Makefile: FORCE
     ../$(SRC_DIR)/lan865x_ptp.o\
     ../$(SRC_DIR)/lan865x_arch.o\
     ../$(SRC_DIR)/lan865x_sysfs.o\
+    ../$(SRC_DIR)/lan865x_health.o\
     ../$(SRC_DIR)/t1s_hat_fxl6408.o\
     ../src/kernel/oa_tc6.o\
 " >> $@

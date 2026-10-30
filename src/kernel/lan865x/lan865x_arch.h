@@ -9,10 +9,14 @@
 #ifndef LAN865X_ARCH_H
 #define LAN865X_ARCH_H
 
+#include <linux/cdev.h>
 #include <linux/i2c.h>
 #include <linux/net_tstamp.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/types.h>
+#include <linux/workqueue.h>
+
+#include "lan865x_health.h"
 
 #ifdef __LAN865X_DEBUG__
 #define LAN865X_DEBUG(...) pr_debug(__VA_ARGS__)
@@ -45,6 +49,7 @@
 #define MMS0_STATS12 0x0214
 
 #define MMS0_OA_STATUS0 0x00000008
+#define MMS0_OA_STATUS1 0x00000009
 #define TS_A_MASK (1 << 8)
 #define TS_B_MASK (1 << 9)
 #define TS_C_MASK (1 << 10)
@@ -78,6 +83,9 @@ struct ptp_device {
     struct ptp_clock_info ptp_info;
 
     struct task_struct* ptp_thread;
+    wait_queue_head_t txts_wq;                          /* woken when a TX timestamp is requested */
+    spinlock_t txts_lock;                               /* protects lan865x_priv.waiting_txts_skb[] */
+    unsigned long txts_start[LAN865X_TIMESTAMP_ID_MAX]; /* jiffies */
 
     u32 ti_subnano_b24; // timer increase every clock (25MHz) cycle
     u64 offset;
@@ -104,6 +112,32 @@ struct lan865x_priv {
     u8 node_id;
 
     struct task_struct* plca_check_thread;
+
+    /* /dev/lan865xN register access node (LAN865X_READ_REG/WRITE_REG) */
+    struct cdev cdev;
+    dev_t devt;
+    bool cdev_added;
+
+    /* lan865x_health.c */
+    struct delayed_work mon_work;
+    struct mutex hw_lock; /* monitor work vs. recovery */
+    spinlock_t stats_lock;
+    u64 hwstats[LAN865X_HWSTAT_NUM];
+    /* TX stall detection / recovery */
+    struct delayed_work rcv_work;
+    unsigned long rcv_flags; /* LAN865X_RCV_PENDING, LAN865X_RCV_STOPPING */
+    int rcv_reason;
+    unsigned long rcv_last; /* jiffies of the last recovery */
+    unsigned int rcv_backoff_ms;
+    bool rcv_phy_started;
+    unsigned long stall_since; /* jiffies, 0 = no stall suspected */
+    u64 stall_tftx;            /* chip TFTX when the suspicion started */
+    u64 replay_host_base;      /* tx_packets at the last (re)start */
+    u64 replay_chip_base;      /* chip FTX at the last (re)start */
+    u64 replay_att_base;       /* chip TFTX at the last (re)start */
+    /* collision detect policy */
+    int cden_cur; /* -1 = unknown (after reset) */
+    int pst_ok_polls;
 };
 
 struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_info);

@@ -18,7 +18,37 @@
 #define NSEC_PER_MHZ 1000
 #define MHZ_TO_NS(mhz) (NSEC_PER_MHZ / (mhz))
 
-#define PTP_THREAD_INTERVAL_MICROSECOND 10
+/* The old thread busy-waited udelay(10) and read OA_STATUS0 over SPI on
+ * every iteration, whether or not a timestamp was outstanding: on the lab
+ * RPi4 that was one CPU at 100 % ("lan865x-ptp-thread" R, 99.9 %) and
+ * ~63,000 SPI control transactions/s on an idle link.  It also wrote the
+ * whole STATUS0 back (W1C) whenever a TTSCAx bit was set, clearing error
+ * bits that belong to the oa_tc6 extended-status handler, and passed a
+ * possibly NULL / already freed waiting_txts_skb to skb_tstamp_tx().
+ *
+ * Now the thread sleeps until a frame with a TX timestamp request is
+ * queued, then polls OA_STATUS0/OA_STATUS1 every ptp_poll_us (sleeping)
+ * until the capture is available (TTSCAx, DS60001734F 11.1.6), reported
+ * missed (TTSCMx, 11.1.7) or ptp_ts_timeout_ms passed, and clears only the
+ * bits it handled.
+ */
+#ifndef LAN865X_DEF_PTP_POLL_US
+#define LAN865X_DEF_PTP_POLL_US 100
+#endif
+static unsigned int ptp_poll_us = LAN865X_DEF_PTP_POLL_US;
+module_param(ptp_poll_us, uint, 0644);
+MODULE_PARM_DESC(ptp_poll_us, "TX timestamp poll interval in us while a timestamp is outstanding (default 100)");
+
+#ifndef LAN865X_DEF_PTP_TS_TIMEOUT_MS
+#define LAN865X_DEF_PTP_TS_TIMEOUT_MS 200
+#endif
+static unsigned int ptp_ts_timeout_ms = LAN865X_DEF_PTP_TS_TIMEOUT_MS;
+module_param(ptp_ts_timeout_ms, uint, 0644);
+MODULE_PARM_DESC(ptp_ts_timeout_ms, "Give up on a TX timestamp after this many ms (default 200)");
+
+#define TS_MISSED_A_MASK BIT(24) /* OA_STATUS1.TTSCMA */
+#define TS_MISSED_B_MASK BIT(25) /* OA_STATUS1.TTSCMB */
+#define TS_MISSED_C_MASK BIT(26) /* OA_STATUS1.TTSCMC */
 
 struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_info) {
     struct ptp_device* ptpdev = container_of(ptp_info, struct ptp_device, ptp_info);
@@ -27,55 +57,151 @@ struct lan865x_priv* get_lan865x_priv_by_ptp_info(struct ptp_clock_info* ptp_inf
     return priv;
 }
 
+static struct sk_buff* lan865x_take_txts_skb(struct lan865x_priv* priv, int id) {
+    struct ptp_device* ptpdev = priv->ptpdev;
+    struct sk_buff* skb;
+
+    spin_lock_bh(&ptpdev->txts_lock);
+    skb = priv->waiting_txts_skb[id];
+    priv->waiting_txts_skb[id] = NULL;
+    spin_unlock_bh(&ptpdev->txts_lock);
+
+    return skb;
+}
+
+static bool lan865x_txts_pending(struct lan865x_priv* priv) {
+    return READ_ONCE(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP]) ||
+           READ_ONCE(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL]);
+}
+
+/* Called from ndo_start_xmit (BH): remember a clone of @skb for the TX
+ * timestamp and return the capture register to request in the TX data
+ * header (TSC field).  skb_clone_sk() holds a socket reference, so the
+ * timestamp can be delivered with skb_complete_tx_timestamp() even if the
+ * original skb is long gone.
+ */
+u8 lan865x_ptp_request_tx_ts(struct lan865x_priv* priv, struct sk_buff* skb) {
+    struct ptp_device* ptpdev = priv->ptpdev;
+    struct sk_buff *clone, *old;
+    int id;
+
+    if (!ptpdev) {
+        return LAN865X_TIMESTAMP_ID_NONE;
+    }
+
+    clone = skb_clone_sk(skb);
+    if (!clone) {
+        return LAN865X_TIMESTAMP_ID_NONE;
+    }
+
+    id = is_gptp_packet(skb) ? LAN865X_TIMESTAMP_ID_GPTP : LAN865X_TIMESTAMP_ID_NORMAL;
+
+    spin_lock_bh(&ptpdev->txts_lock);
+    old = priv->waiting_txts_skb[id];
+    priv->waiting_txts_skb[id] = clone;
+    ptpdev->txts_start[id] = jiffies;
+    spin_unlock_bh(&ptpdev->txts_lock);
+
+    if (old) {
+        priv->hwstats[LAN865X_SW_PTP_TS_REPLACED]++;
+        dev_kfree_skb_any(old);
+    }
+
+    skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
+    wake_up(&ptpdev->txts_wq);
+
+    return id;
+}
+
+static void lan865x_complete_txts(struct lan865x_priv* priv, int id) {
+    struct skb_shared_hwtstamps skb_hwts = {0};
+    struct sk_buff* skb;
+    timestamp_t tx_ts;
+
+    tx_ts = lan865x_read_tx_timestamp(priv, id);
+    LAN865X_DEBUG("%s: %c Timestamp = %llu.%llu\n", __func__, 'A' + id - 1, tx_ts / NS_IN_1S, tx_ts % NS_IN_1S);
+
+    skb = lan865x_take_txts_skb(priv, id);
+    if (!skb) {
+        return; /* timed out or replaced meanwhile */
+    }
+
+    skb_hwts.hwtstamp = ns_to_ktime(tx_ts);
+    skb_complete_tx_timestamp(skb, &skb_hwts);
+    priv->hwstats[LAN865X_SW_PTP_TS_OK]++;
+}
+
+static void lan865x_drop_txts(struct lan865x_priv* priv, int id, int stat) {
+    struct sk_buff* skb = lan865x_take_txts_skb(priv, id);
+
+    if (skb) {
+        priv->hwstats[stat]++;
+        kfree_skb(skb);
+    }
+}
+
 static int lan865x_ptp_thread_handler(void* data) {
     struct ptp_device* ptpdev = (struct ptp_device*)data;
     struct lan865x_priv* priv = dev_get_drvdata(ptpdev->dev);
-    u32 status;
-    timestamp_t tx_ts;
-    struct skb_shared_hwtstamps skb_hwts;
+    static const struct {
+        int id;
+        u32 avail;  /* OA_STATUS0 */
+        u32 missed; /* OA_STATUS1 */
+    } slot[] = {
+        {LAN865X_TIMESTAMP_ID_GPTP, TS_A_MASK, TS_MISSED_A_MASK},
+        {LAN865X_TIMESTAMP_ID_NORMAL, TS_B_MASK, TS_MISSED_B_MASK},
+    };
+    u32 st[2]; /* OA_STATUS0, OA_STATUS1 */
+    u32 clr0, clr1;
 
     while (!kthread_should_stop()) {
-        // NOTE: ptp_thread_handler operates at 10µs intervals, which may affect PTP accuracy.
-        udelay(PTP_THREAD_INTERVAL_MICROSECOND);
-
-        if (oa_tc6_read_register(ptpdev->tc6, MMS0_OA_STATUS0, &status))
-            return -ENODEV;
-
-        // GPTP
-        if (status & TS_A_MASK) {
-            tx_ts = lan865x_read_tx_timestamp(priv, 1);
-            LAN865X_DEBUG("%s: A Timestamp = %llu.%llu\n", __func__, tx_ts / NS_IN_1S, tx_ts % NS_IN_1S);
-
-            skb_hwts.hwtstamp = ns_to_ktime(tx_ts);
-            LAN865X_DEBUG("%s: tx_ts = %llu, skb_hwts.hwtstamp = %llu\n", __func__, tx_ts, skb_hwts.hwtstamp);
-            mutex_lock(&ptpdev->lock);
-            skb_tstamp_tx(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP], &skb_hwts);
-            kfree_skb(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_GPTP]);
-            mutex_unlock(&ptpdev->lock);
-        }
-        // NORMAL
-        if (status & TS_B_MASK) {
-            tx_ts = lan865x_read_tx_timestamp(priv, 2);
-            LAN865X_DEBUG("%s: B Timestamp = %llu.%llu\n", __func__, tx_ts / NS_IN_1S, tx_ts % NS_IN_1S);
-
-            skb_hwts.hwtstamp = ns_to_ktime(tx_ts); 
-            LAN865X_DEBUG("%s: tx_ts = %llu, skb_hwts.hwtstamp = %llu\n", __func__, tx_ts, skb_hwts.hwtstamp);
-            mutex_lock(&ptpdev->lock);
-            skb_tstamp_tx(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL], &skb_hwts);
-            kfree_skb(priv->waiting_txts_skb[LAN865X_TIMESTAMP_ID_NORMAL]);
-            mutex_unlock(&ptpdev->lock);
-        }
-        // RESERVED
-        if (status & TS_C_MASK) {
-            tx_ts = lan865x_read_tx_timestamp(priv, 3);
-            LAN865X_DEBUG("%s: C Timestamp = %llu.%llu\n", __func__, tx_ts / NS_IN_1S, tx_ts % NS_IN_1S);
+        if (!lan865x_txts_pending(priv)) {
+            wait_event_interruptible_timeout(ptpdev->txts_wq, lan865x_txts_pending(priv) || kthread_should_stop(), HZ);
+            continue;
         }
 
-        if (status & (TS_A_MASK | TS_B_MASK | TS_C_MASK)) {
-            if (oa_tc6_write_register(ptpdev->tc6, MMS0_OA_STATUS0, status))
-                return -ENODEV;
+        /* An SPI error (e.g. during a MAC-PHY reset by the TX stall
+         * recovery) is not a reason to end the thread any more.
+         */
+        if (oa_tc6_read_registers(ptpdev->tc6, MMS0_OA_STATUS0, st, 2)) {
+            usleep_range(1000, 2000);
+            st[0] = st[1] = 0;
         }
-        status = 0;
+
+        clr0 = 0;
+        clr1 = 0;
+        for (int i = 0; i < ARRAY_SIZE(slot); i++) {
+            if (st[0] & slot[i].avail) {
+                lan865x_complete_txts(priv, slot[i].id);
+                clr0 |= slot[i].avail;
+            } else if (st[1] & slot[i].missed) {
+                lan865x_drop_txts(priv, slot[i].id, LAN865X_SW_PTP_TS_MISSED);
+                clr1 |= slot[i].missed;
+            } else if (READ_ONCE(priv->waiting_txts_skb[slot[i].id]) &&
+                       time_after(jiffies, ptpdev->txts_start[slot[i].id] + msecs_to_jiffies(ptp_ts_timeout_ms))) {
+                lan865x_drop_txts(priv, slot[i].id, LAN865X_SW_PTP_TS_TIMEOUT);
+            }
+        }
+        // RESERVED (capture C is never requested by this driver)
+        if (st[0] & TS_C_MASK) {
+            lan865x_read_tx_timestamp(priv, LAN865X_TIMESTAMP_ID_RESERVED);
+            clr0 |= TS_C_MASK;
+        }
+        if (st[1] & TS_MISSED_C_MASK) {
+            clr1 |= TS_MISSED_C_MASK;
+        }
+
+        /* W1C only what was handled here */
+        if (clr0) {
+            oa_tc6_write_register(ptpdev->tc6, MMS0_OA_STATUS0, clr0);
+        }
+        if (clr1) {
+            oa_tc6_write_register(ptpdev->tc6, MMS0_OA_STATUS1, clr1);
+        }
+
+        if (lan865x_txts_pending(priv)) {
+            usleep_range(ptp_poll_us, ptp_poll_us + ptp_poll_us / 2 + 1);
+        }
     }
 
     return 0;
@@ -188,16 +314,16 @@ static int lan865x_ptp_gettimex64(struct ptp_clock_info* ptp_info, struct timesp
 
     *res_ts = ns_to_timespec64(timestamp);
 
-   /*
-    * NOTE:
-    * Since the LAN865x device communicates over SPI, consecutive register accesses
-    * without sufficient delay can cause SPI buffering and transaction backlog.
-    * This may introduce additional latency, resulting in a large time offset
-    * between the host clock and the device clock (e.g., observed via phc2sys).
-    *
-    * Therefore, appropriate inter-access delays are required to ensure
-    * stable SPI transactions and accurate time synchronization.
-    */
+    /*
+     * NOTE:
+     * Since the LAN865x device communicates over SPI, consecutive register accesses
+     * without sufficient delay can cause SPI buffering and transaction backlog.
+     * This may introduce additional latency, resulting in a large time offset
+     * between the host clock and the device clock (e.g., observed via phc2sys).
+     *
+     * Therefore, appropriate inter-access delays are required to ensure
+     * stable SPI transactions and accurate time synchronization.
+     */
     udelay(500);
 
     LAN865X_DEBUG("%s: timestamp = %llu, res_ts = %llu.%llu\n", __func__, timestamp, res_ts->tv_sec, res_ts->tv_nsec);
@@ -249,9 +375,17 @@ struct ptp_device* ptp_device_init(struct device* dev, struct oa_tc6* tc6, s32 m
     };
 
     mutex_init(&ptpdev->lock);
+    init_waitqueue_head(&ptpdev->txts_wq);
+    spin_lock_init(&ptpdev->txts_lock);
 
     ptpdev->dev = dev;
     ptpdev->tc6 = tc6;
+
+    /* Fill ptp_info before registering: ptp_clock_register() keeps the
+     * pointer, and the old order exposed /dev/ptpN with all-NULL ops until
+     * the assignment after it ran.
+     */
+    ptpdev->ptp_info = ptp_info;
 
     ptpdev->ptp_clock = ptp_clock_register(&ptpdev->ptp_info, dev);
     if (IS_ERR(ptpdev->ptp_clock)) {
@@ -260,7 +394,6 @@ struct ptp_device* ptp_device_init(struct device* dev, struct oa_tc6* tc6, s32 m
         return NULL;
     }
 
-    ptpdev->ptp_info = ptp_info;
     // TODO: read from register
     ptpdev->ti_subnano_b24 = TICKS_SCALE << TISUBNS_FRAC_BITS;
 
@@ -293,6 +426,16 @@ void ptp_device_destroy(struct ptp_device* ptp) {
 
     if (ptp->ptp_thread && !IS_ERR(ptp->ptp_thread)) {
         kthread_stop(ptp->ptp_thread);
+    }
+
+    {
+        struct lan865x_priv* priv = dev_get_drvdata(ptp->dev);
+
+        if (priv) {
+            for (int id = LAN865X_TIMESTAMP_ID_GPTP; id <= LAN865X_TIMESTAMP_ID_NORMAL; id++) {
+                kfree_skb(lan865x_take_txts_skb(priv, id));
+            }
+        }
     }
 
     if (ptp->ptp_clock && !IS_ERR(ptp->ptp_clock)) {
