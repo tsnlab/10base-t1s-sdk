@@ -124,6 +124,7 @@
 #define OA_TC6_DATA_FOOTER_DATA_VALID BIT(21)
 #define OA_TC6_DATA_FOOTER_START_VALID BIT(20)
 #define OA_TC6_DATA_FOOTER_START_WORD_OFFSET GENMASK(19, 16)
+#define OA_TC6_DATA_FOOTER_FRAME_DROP BIT(15)
 #define OA_TC6_DATA_FOOTER_END_VALID BIT(14)
 #define OA_TC6_DATA_FOOTER_END_BYTE_OFFSET GENMASK(13, 8)
 #define OA_TC6_DATA_FOOTER_TX_CREDITS GENMASK(5, 1)
@@ -1352,6 +1353,12 @@ static int oa_tc6_prcs_rx_chunk_payload(struct oa_tc6 *tc6, u8 *data,
 		FIELD_GET(OA_TC6_DATA_FOOTER_END_BYTE_OFFSET, footer);
 	bool start_valid = FIELD_GET(OA_TC6_DATA_FOOTER_START_VALID, footer);
 	bool end_valid = FIELD_GET(OA_TC6_DATA_FOOTER_END_VALID, footer);
+	/* TC6 v1.1 7.3.7: FD (valid with EV only) - the frame ending in this
+	 * chunk is to be dropped (cut-through frame the MAC rejected, or a
+	 * frame the MAC-PHY terminated after a header error, 7.5.1).
+	 */
+	bool frame_drop = end_valid &&
+			  FIELD_GET(OA_TC6_DATA_FOOTER_FRAME_DROP, footer);
 	u16 size;
 
 	/* Restart the new rx frame after receiving rx buffer overflow error */
@@ -1363,6 +1370,11 @@ static int oa_tc6_prcs_rx_chunk_payload(struct oa_tc6 *tc6, u8 *data,
 
 	/* Process the chunk with complete rx frame */
 	if (start_valid && end_valid && start_byte_offset < end_byte_offset) {
+		if (frame_drop) {
+			oa_tc6_cleanup_ongoing_rx_skb(tc6);
+			tc6->netdev->stats.rx_dropped++;
+			return 0;
+		}
 		size = end_byte_offset + 1 - start_byte_offset;
 		return oa_tc6_prcs_complete_rx_frame(
 			tc6, &data[start_byte_offset], size);
@@ -1377,6 +1389,10 @@ static int oa_tc6_prcs_rx_chunk_payload(struct oa_tc6 *tc6, u8 *data,
 
 	/* Process the chunk with only rx frame end */
 	if (end_valid && !start_valid) {
+		if (frame_drop) {
+			oa_tc6_cleanup_ongoing_rx_skb(tc6);
+			return 0;
+		}
 		size = end_byte_offset + 1;
 		return oa_tc6_prcs_rx_frame_end(tc6, data, size);
 	}
@@ -1389,7 +1405,9 @@ static int oa_tc6_prcs_rx_chunk_payload(struct oa_tc6 *tc6, u8 *data,
 		 * possibility of getting an end valid of a previously
 		 * incomplete rx frame along with the new rx frame start valid.
 		 */
-		if (tc6->rx_skb) {
+		if (tc6->rx_skb && frame_drop) {
+			oa_tc6_cleanup_ongoing_rx_skb(tc6);
+		} else if (tc6->rx_skb) {
 			size = end_byte_offset + 1;
 			oa_tc6_prcs_rx_frame_end(tc6, data, size);
 
