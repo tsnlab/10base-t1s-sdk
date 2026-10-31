@@ -313,7 +313,7 @@ static void lan865x_rebaseline(struct lan865x_priv* priv) {
 /* Called with hw_lock, right after a statistics poll. */
 static void lan865x_check_tx(struct lan865x_priv* priv) {
     struct oa_tc6_tx_state st;
-    u64 host, chip, att;
+    u64 host, chip, att, prog;
     u8 txc, rba;
 
     if (test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags)) {
@@ -348,10 +348,19 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
         return;
     }
 
-    if (!priv->stall_since || priv->hwstats[LAN865X_HW_TFTX] != priv->stall_tftx) {
+    /* TX progress: the chip's TFTX on a LAN865x.  The t1s MAC has no
+     * LAN865x STATS11 (MMS1 >= 0x100 is not accessed, TFTX stays 0), so
+     * there the progress is the frames the chip took over SPI (tx_packets,
+     * counted when the last chunk of a frame goes out with credits).  A
+     * truly stalled chip grants no credits, so tx_packets stops too.
+     * Without this a saturated t1s link (TXC 0 at every poll, pending
+     * skb) was reset every few seconds while sending ~800 frames/s.
+     */
+    prog = T1S_IS(priv) ? priv->netdev->stats.tx_packets : priv->hwstats[LAN865X_HW_TFTX];
+    if (!priv->stall_since || prog != priv->stall_tftx) {
         /* first suspicion, or the chip is still finishing frames */
         priv->stall_since = jiffies | 1;
-        priv->stall_tftx = priv->hwstats[LAN865X_HW_TFTX];
+        priv->stall_tftx = prog;
         return;
     }
 
