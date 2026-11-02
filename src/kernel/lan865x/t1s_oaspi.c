@@ -16,8 +16,8 @@
  *                                   ADDR_H bits 15:8)
  *   SAB1 back-off seed (lab-fixes backoff_seed) -> none, skipped
  *   TI/TISUBN/TSH/TSL/TN/TA 0x77/0x6F/0x70/0x74/0x75/0x76 (PTP, TS build)
- *                                -> PTP_* 0x20..0x2A (command model); not
- *                                   supported: the t1s path needs TIMESTAMP=0
+ *                                -> PTP_* 0x20..0x2A (command model), own
+ *                                   PHC in t1s_ptp.c (TIMESTAMP=0 build)
  *   STATS0..12 0x208..0x214, BMGR_CTL 0x200 -> none (statistics 0x40..0x59,
  *                                   not polled; address >= 0x100 not used)
  * LAN865x MMS4 vendor writes (AN1760 trims 0x0040..0x00F9, CDCTL0 0x0087,
@@ -132,7 +132,18 @@ int t1s_oaspi_chip_init(struct oa_tc6* tc6) {
         return ret;
     }
 
-    /* CONFIG0.ZARFE; SYNC is set by oa_tc6 after this hook, FTSE/FTSS stay 0 (TIMESTAMP=0 build) */
+    /* MAC timestamps (TS_CFG, latencies, clock rate) and the receive
+     * layout before SYNC: no frame crosses the change (t1s_ptp.c)
+     */
+    ret = t1s_ptp_chip_init(tc6, priv);
+    if (ret) {
+        return ret;
+    }
+
+    /* CONFIG0.ZARFE; SYNC is set by oa_tc6 after this hook.  CONFIG0.FTSE/FTSS
+     * stay 0: STDCAP.FTSC = 0, the receive timestamp comes from the MAC
+     * (TS_CFG), not from the TC6 layer
+     */
     ret = oa_tc6_read_register(tc6, T1S_TC6_CONFIG0, &v);
     if (ret) {
         return ret;
@@ -211,7 +222,10 @@ static const struct {
     {0x00000008, "OA_STATUS0"}, {0x00000009, "OA_STATUS1"}, {0x0000000B, "OA_BUFSTS"}, {0x0000000C, "OA_IMASK0"},
     {0x0000000D, "OA_IMASK1"}, {0x00010000, "MAC_ID"},    {0x00010001, "MAC_CTRL"},   {0x00010002, "MAC_ADDR_L"},
     {0x00010003, "MAC_ADDR_H"}, {0x00010005, "MC_HASH_L"}, {0x00010006, "MC_HASH_H"}, {0x00010007, "MAC_CAP"},
-    {0x00010008, "MAC_IRQ_STS"}, {0x00010016, "TS_CFG"},   {0x0004CA00, "MIDVER"},     {0x0004CA01, "PLCA_CTRL0"},
+    {0x00010008, "MAC_IRQ_STS"}, {0x00010016, "TS_CFG"},   {0x00010017, "TS_STS"},     {0x00010018, "TS_IMSK"},
+    {0x00010019, "TS_TX_LAT"},  {0x0001001A, "TS_RX_LAT"}, {0x00010020, "PTP_CMD"},    {0x00010024, "PTP_INC"},
+    {0x00010010, "TTSCAH"},     {0x00010011, "TTSCAL"},    {0x00010012, "TTSCBH"},     {0x00010013, "TTSCBL"},
+    {0x00010014, "TTSCCH"},     {0x00010015, "TTSCCL"},    {0x0004CA00, "MIDVER"},     {0x0004CA01, "PLCA_CTRL0"},
     {0x0004CA02, "PLCA_CTRL1"}, {0x0004CA03, "PLCA_STS"},  {0x0004CA04, "PLCA_TOTMR"}, {0x0004CA05, "PLCA_BURST"},
 };
 
@@ -230,5 +244,5 @@ ssize_t t1s_oaspi_regdump(struct lan865x_priv* priv, char* buf) {
             n += sysfs_emit_at(buf, n, "%02u:%04x %-12s 0x%08x\n", a >> 16, a & 0xFFFF, t1s_dump_regs[i].name, v);
         }
     }
-    return n;
+    return t1s_ptp_stats(priv, buf, n);
 }

@@ -96,6 +96,8 @@ struct ptp_device {
     struct mutex lock;
 };
 
+struct t1s_ptp;
+
 struct lan865x_priv {
     struct work_struct multicast_work;
     struct net_device* netdev;
@@ -103,6 +105,7 @@ struct lan865x_priv {
     struct oa_tc6* tc6;
 
     struct ptp_device* ptpdev;
+    struct t1s_ptp* t1s_ptp; /* t1s-oaspi PTP clock (t1s_ptp.c), NULL otherwise */
     struct hwtstamp_config tstamp_config;
     struct sk_buff* waiting_txts_skb[LAN865X_TIMESTAMP_ID_MAX - 1];
 

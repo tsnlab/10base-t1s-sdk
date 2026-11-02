@@ -35,7 +35,7 @@ struct spi_device;
 #define T1S_MMS1_MCAST_HASH_L 0x00010005
 #define T1S_MMS1_MCAST_HASH_H 0x00010006
 #define T1S_MMS1_MAC_CAP 0x00010007
-#define T1S_MMS1_TS_CFG 0x00010016 /* .7 FTSE .6 FTSS (not used: TIMESTAMP=0 build) */
+#define T1S_MMS1_TS_CFG 0x00010016 /* .7 FTSE .6 FTSS (t1s_ptp.c) */
 
 #define T1S_DEF_SPI_HZ 12500000u
 #define T1S_DEF_NODE_ID 1u
@@ -46,5 +46,19 @@ int t1s_oaspi_set_macaddr(struct lan865x_priv* priv, const u8* mac);
 int t1s_oaspi_mac_enable(struct lan865x_priv* priv, bool en);
 void t1s_oaspi_set_rx_mode(struct lan865x_priv* priv);
 ssize_t t1s_oaspi_regdump(struct lan865x_priv* priv, char* buf);
+
+/* t1s_ptp.c: PTP clock + frame timestamps (TIMESTAMP=0 build) */
+struct ifreq;
+struct sk_buff;
+struct kernel_ethtool_ts_info;
+int t1s_ptp_chip_init(struct oa_tc6* tc6, struct lan865x_priv* priv);
+int t1s_ptp_init(struct lan865x_priv* priv);
+void t1s_ptp_exit(struct lan865x_priv* priv);
+u8 t1s_ptp_tx_request(struct lan865x_priv* priv, struct sk_buff* skb);
+void t1s_ptp_tx_cancel(struct lan865x_priv* priv, u8 slot);
+int t1s_ptp_get_ts_info(struct lan865x_priv* priv, struct kernel_ethtool_ts_info* info);
+int t1s_ptp_hwtstamp_get(struct lan865x_priv* priv, struct ifreq* ifr);
+int t1s_ptp_hwtstamp_set(struct lan865x_priv* priv, struct ifreq* ifr);
+ssize_t t1s_ptp_stats(struct lan865x_priv* priv, char* buf, ssize_t n);
 
 #endif /* T1S_OASPI_H */
