@@ -1583,8 +1583,20 @@ static void oa_tc6_add_tx_skb_to_spi_buf(struct oa_tc6 *tc6)
 	/* Set start valid if the current tx chunk contains the start of the tx
 	 * ethernet frame.
 	 */
-	if (!tc6->tx_skb_offset)
+	if (!tc6->tx_skb_offset) {
 		start_valid = OA_TC6_DATA_START_VALID;
+#ifdef FRAME_TIMESTAMP_ENABLE
+		/* OPEN Alliance TC6 v1.1 7.8.2 / LAN8650/1 datasheet 5.2.5.1: the
+		 * Time Stamp Capture (TSC) field is only valid in the data header of
+		 * the chunk that holds the start of the frame (SV = 1); the MAC-PHY
+		 * ignores it in later chunks. Frames longer than one 64-byte chunk
+		 * (e.g. 68-byte gPTP Pdelay_Req / Pdelay_Resp) never got a TX
+		 * timestamp when TSC was placed in the end-of-frame chunk.
+		 */
+		ts_capture_mode = tc6->ongoing_tx_ts_capture_mode;
+		tc6->ongoing_tx_ts_capture_mode = 0;
+#endif /* FRAME_TIMESTAMP_ENABLE */
+	}
 
 	/* If the remaining tx skb length is more than the chunk payload size of
 	 * 64 bytes then copy only 64 bytes and leave the ongoing tx skb for
@@ -1607,10 +1619,6 @@ static void oa_tc6_add_tx_skb_to_spi_buf(struct oa_tc6 *tc6)
 		tc6->netdev->stats.tx_packets++;
 		kfree_skb(tc6->ongoing_tx_skb);
 		tc6->ongoing_tx_skb = NULL;
-#ifdef FRAME_TIMESTAMP_ENABLE
-		ts_capture_mode = tc6->ongoing_tx_ts_capture_mode;
-		tc6->ongoing_tx_ts_capture_mode = 0;
-#endif /* FRAME_TIMESTAMP_ENABLE */
 	}
 
 #ifdef FRAME_TIMESTAMP_ENABLE
