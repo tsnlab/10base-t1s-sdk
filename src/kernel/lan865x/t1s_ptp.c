@@ -12,12 +12,23 @@
  *   0x17 TS_STS   .8..10 TTSCAA..AC, .16..18 LOST A..C, .20..22 OVW A..C,
  *                 .24 PPS, .25 CMDERR, .26 WERR  (W1C)
  *   0x19 / 0x1A   TS_TX_LAT / TS_RX_LAT, signed 24-bit ns, reset 0
- *   0x20 PTP_CMD  write .2:0 = 1 LOAD 2 ADJ 3 SNAP 4 INC; read .8 BUSY
+ *   0x20 PTP_CMD  write .2:0 = 1 LOAD 2 ADJ 3 SNAP 4 INC 5 PPS_ARM 6 PPS_STOP;
+ *                 read .8 BUSY .9 PPS_ARMED .10 PPS level
  *   0x21 / 0x22   SET_SEC / SET_NS (LOAD), 0x23 ADJ (signed ns, |x| < 1e9)
  *   0x24 PTP_INC  ns per clk_s cycle, Q8.24 (reset 0x14000000 = 20 ns)
  *   0x25 / 0x26   SNAP_SEC / SNAP_NS
- * Writes to 0x20..0x24 while BUSY are ignored (WERR), so every command waits
- * for BUSY to clear before the next register write.
+ *   0x27 / 0x28   PPS_START_SEC / PPS_START_NS, 0x29 PPS_PERIOD, 0x2A PPS_WIDTH
+ *                 (ns; reset 1e9 / 1e8)
+ * Writes to 0x20..0x24 and 0x27..0x2A while BUSY are ignored (WERR), so every
+ * command waits for BUSY to clear before the next register write.
+ *
+ * Periodic output (notes/54 3.5, vendor - TC6 has no PPS): PPS_ARM raises the
+ * MAC's pps output when the clock reaches START, lowers it WIDTH ns later and
+ * raises it again every PERIOD ns (edges on the clk_s grid, 0..20 ns after the
+ * target).  1 <= PERIOD <= 1e9, 0 < WIDTH < PERIOD, START_NS < 1e9 (else
+ * CMDERR, nothing sent); START must be in the future (else not armed, CMDERR).
+ * LOAD and ADJ (time steps) disarm it; INC (rate) does not.  On the TSN-HAT R2
+ * board bits the output is FPGA pin AB16 (net TSN_PPS -> R11 -> J5 pin 1).
  *
  * Receive (TC6 v1.1 7.8.1): with TS_CFG = FTSE | FTSS the MAC puts the
  * 8-byte timestamp (SFD on the MII receive side, clock of this MAC) in front
@@ -57,6 +68,7 @@ ssize_t t1s_ptp_stats(struct lan865x_priv* priv, char* buf, ssize_t n) {
 #include <linux/delay.h>
 #include <linux/jiffies.h>
 #include <linux/kthread.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/net_tstamp.h>
@@ -93,16 +105,32 @@ ssize_t t1s_ptp_stats(struct lan865x_priv* priv, char* buf, ssize_t n) {
 #define T1S_TS_RX_LAT T1S_MMS1(0x1A)
 #define T1S_PTP_CMD T1S_MMS1(0x20)
 #define T1S_PTP_CMD_BUSY BIT(8)
+#define T1S_PTP_CMD_ARMED BIT(9)
 #define T1S_PTP_SET_SEC T1S_MMS1(0x21)
 #define T1S_PTP_SET_NS T1S_MMS1(0x22)
 #define T1S_PTP_ADJ T1S_MMS1(0x23)
 #define T1S_PTP_INC T1S_MMS1(0x24)
 #define T1S_PTP_SNAP_SEC T1S_MMS1(0x25)
 #define T1S_PTP_SNAP_NS T1S_MMS1(0x26)
+#define T1S_PPS_START_SEC T1S_MMS1(0x27)
+#define T1S_PPS_START_NS T1S_MMS1(0x28)
+#define T1S_PPS_PERIOD T1S_MMS1(0x29)
+#define T1S_PPS_WIDTH T1S_MMS1(0x2A)
 #define T1S_CMD_LOAD 1
 #define T1S_CMD_ADJ 2
 #define T1S_CMD_SNAP 3
 #define T1S_CMD_INC 4
+#define T1S_CMD_PPS_ARM 5
+#define T1S_CMD_PPS_STOP 6
+/* periodic output: high and low parts of at least one clk_s cycle (the pin
+ * moves on the 20 ns grid), default width min(period / 2, 100 ms) (100 ms =
+ * the MAC's reset PPS_WIDTH), first edge at least 10 ms after the clock was
+ * read (the arm sequence is six SPI register accesses)
+ */
+#define T1S_PO_MIN_NS 20u
+#define T1S_PO_WIDTH_DEF_MAX 100000000u
+#define T1S_PO_MARGIN_NS 10000000u
+#define T1S_PO_TRIES 3
 #define T1S_INC_NOMINAL 0x14000000u /* 20.0 ns: clk_s 50 MHz */
 #define T1S_NS_MASK 0x3FFFFFFFu
 #define T1S_TC6_STDCAP 0x00000002
@@ -149,6 +177,14 @@ struct t1s_ptp {
     struct task_struct* thread;
 
     u64 tx_ok, tx_lost, tx_timeout, tx_noslot;
+
+    /* periodic output 0 = the MAC's pps pin; under cmd_lock */
+    bool po_on;     /* requested (PTP_CLK_REQ_PEROUT on, armed at least once) */
+    u64 po_start;   /* phase reference, PHC ns: edges at po_start + k * po_period */
+    u32 po_period;  /* ns, <= 1e9 */
+    u32 po_width;   /* ns */
+    u64 po_next;    /* first rising edge of the last arm, PHC ns */
+    u64 po_arms, po_rearms, po_errs;
 };
 
 static inline ktime_t t1s_ts64(u32 sec, u32 lo) {
@@ -249,6 +285,93 @@ static int t1s_settime(struct t1s_ptp* p, const struct timespec64* ts) {
     return ret ? ret : t1s_cmd(tc6, T1S_CMD_LOAD);
 }
 
+/* ---- periodic output (PTP_CLK_REQ_PEROUT 0 = the MAC's pps pin) ---- */
+
+/* Arm the MAC PPS at the first edge po_start + k * po_period that lies at
+ * least T1S_PO_MARGIN_NS after the clock now.  The MAC refuses a START that
+ * has passed when the command arrives (CMDERR, not armed); then the clock is
+ * read again and a later edge taken.  cmd_lock held.
+ */
+static int t1s_po_arm(struct t1s_ptp* p) {
+    struct oa_tc6* tc6 = p->priv->tc6;
+    struct timespec64 now;
+    u64 t = 0, min;
+    u32 ns = 0, v = 0;
+    int ret = -EIO;
+
+    for (int i = 0; i < T1S_PO_TRIES; i++) {
+        ret = t1s_gettime(p, &now, NULL);
+        if (ret) {
+            return ret;
+        }
+        min = (u64)timespec64_to_ns(&now) + ((u64)T1S_PO_MARGIN_NS << i);
+        t = p->po_start;
+        if (t < min) {
+            t += div_u64(min - t + p->po_period - 1, p->po_period) * p->po_period;
+        }
+        if (div_u64(t, NSEC_PER_SEC) > U32_MAX) {
+            return -ERANGE; /* 32-bit seconds (notes/54 D4) */
+        }
+        /* old CMDERR / WERR (W1C), so the status below answers this ARM */
+        ret = oa_tc6_write_register(tc6, T1S_TS_STS, T1S_TS_STS_CMDERR | T1S_TS_STS_WERR);
+        if (!ret) {
+            ret = oa_tc6_write_register(tc6, T1S_PPS_START_SEC, (u32)div_u64_rem(t, NSEC_PER_SEC, &ns));
+        }
+        if (!ret) {
+            ret = oa_tc6_write_register(tc6, T1S_PPS_START_NS, ns);
+        }
+        if (!ret) {
+            ret = oa_tc6_write_register(tc6, T1S_PPS_PERIOD, p->po_period);
+        }
+        if (!ret) {
+            ret = oa_tc6_write_register(tc6, T1S_PPS_WIDTH, p->po_width);
+        }
+        if (!ret) {
+            ret = t1s_cmd(tc6, T1S_CMD_PPS_ARM);
+        }
+        if (ret != -EIO) {
+            break; /* -EIO = CMDERR: START passed while the arguments were written */
+        }
+    }
+    if (!ret) {
+        ret = oa_tc6_read_register(tc6, T1S_PTP_CMD, &v);
+    }
+    if (!ret && !(v & T1S_PTP_CMD_ARMED)) {
+        ret = -EIO;
+    }
+    if (!ret) {
+        p->po_next = t;
+    }
+    return ret;
+}
+
+/* LOAD and ADJ disarm the MAC PPS (notes/54 3.5, so the pin does not chase a
+ * stepped clock): arm it again on the same phase, at the next edge after the
+ * step (at most one pulse is lost; a pulse that is high during the step is cut
+ * short).  Only when the hardware is not armed: a step that failed may not
+ * have reached the clock.  The step's own result is not changed.  cmd_lock
+ * held.
+ */
+static void t1s_po_after_step(struct t1s_ptp* p) {
+    u32 v;
+    int ret;
+
+    if (!p->po_on) {
+        return;
+    }
+    if (!oa_tc6_read_register(p->priv->tc6, T1S_PTP_CMD, &v) && (v & T1S_PTP_CMD_ARMED)) {
+        return;
+    }
+    ret = t1s_po_arm(p);
+    if (ret) {
+        p->po_errs++; /* the request stands: the next step tries again */
+        dev_warn_ratelimited(&p->priv->spi->dev, "t1s-oaspi: periodic output not re-armed after a clock step: %d\n",
+                             ret);
+        return;
+    }
+    p->po_rearms++;
+}
+
 static int t1s_ptp_gettimex64(struct ptp_clock_info* info, struct timespec64* ts, struct ptp_system_timestamp* sts) {
     struct t1s_ptp* p = container_of(info, struct t1s_ptp, info);
     int ret;
@@ -265,6 +388,7 @@ static int t1s_ptp_settime64(struct ptp_clock_info* info, const struct timespec6
 
     mutex_lock(&p->cmd_lock);
     ret = t1s_settime(p, ts);
+    t1s_po_after_step(p);
     mutex_unlock(&p->cmd_lock);
     return ret;
 }
@@ -289,6 +413,7 @@ static int t1s_ptp_adjtime(struct ptp_clock_info* info, s64 delta) {
             ret = t1s_settime(p, &ts);
         }
     }
+    t1s_po_after_step(p);
     mutex_unlock(&p->cmd_lock);
     return ret;
 }
@@ -307,8 +432,83 @@ static int t1s_ptp_adjfine(struct ptp_clock_info* info, long scaled_ppm) {
     return ret;
 }
 
+/* ptp_clock_time -> ns, only for 0 <= value < 2^32 s; else U64_MAX */
+static u64 t1s_pct_ns(const struct ptp_clock_time* t) {
+    if (t->sec < 0 || t->sec > U32_MAX || t->nsec >= NSEC_PER_SEC) {
+        return U64_MAX;
+    }
+    return (u64)t->sec * NSEC_PER_SEC + t->nsec;
+}
+
+/* Only PTP_CLK_REQ_PEROUT, index 0 = the MAC's pps pin.  No EXTTS (the MAC has
+ * no time-stamped input) and no PTP_CLK_REQ_PPS (that is a kernel PPS event at
+ * every PHC second, which needs a host interrupt with the PHC time; the MAC's
+ * TS_STS.PPS is not routed to the host as an interrupt).
+ *   period    1 s or less (PPS_PERIOD is at most 1e9 ns), high and low parts
+ *             at least 20 ns (one clk_s cycle)
+ *   width     perout.on with PTP_PEROUT_DUTY_CYCLE, else min(period / 2,
+ *             100 ms) - 100 ms for 1 PPS (the MAC's reset value)
+ *   start     edges at start + k * period on the PHC time scale; a start in
+ *             the past (or within 10 ms) moves to the next such edge, so the
+ *             phase is kept.  PTP_PEROUT_PHASE: start = phase (edges at
+ *             phase + k * period, the first one as soon as possible)
+ *   ONE_SHOT  not supported (the MAC output is periodic only)
+ * A clock step (settime, adjtime) re-arms it on the same phase.
+ */
 static int t1s_ptp_enable(struct ptp_clock_info* info, struct ptp_clock_request* rq, int on) {
-    return -EOPNOTSUPP;
+    struct t1s_ptp* p = container_of(info, struct t1s_ptp, info);
+    const struct ptp_perout_request* po = &rq->perout;
+    u64 period, width, start;
+    int ret;
+
+    if (rq->type != PTP_CLK_REQ_PEROUT) {
+        return -EOPNOTSUPP;
+    }
+    if (po->index != 0) {
+        return -EINVAL;
+    }
+    if (!on) {
+        mutex_lock(&p->cmd_lock);
+        p->po_on = false;
+        ret = t1s_cmd(p->priv->tc6, T1S_CMD_PPS_STOP);
+        mutex_unlock(&p->cmd_lock);
+        return ret;
+    }
+    if (po->flags & ~(PTP_PEROUT_DUTY_CYCLE | PTP_PEROUT_PHASE)) {
+        return -EOPNOTSUPP;
+    }
+    period = t1s_pct_ns(&po->period);
+    if (period > NSEC_PER_SEC || period < 2 * T1S_PO_MIN_NS) {
+        return -EINVAL; /* PPS_PERIOD <= 1e9 ns */
+    }
+    if (po->flags & PTP_PEROUT_DUTY_CYCLE) {
+        width = t1s_pct_ns(&po->on);
+    } else {
+        width = min_t(u64, period / 2, T1S_PO_WIDTH_DEF_MAX);
+    }
+    if (width >= period || width < T1S_PO_MIN_NS || period - width < T1S_PO_MIN_NS) {
+        return -EINVAL; /* 0 < PPS_WIDTH < PPS_PERIOD */
+    }
+    start = t1s_pct_ns(&po->start); /* same place as perout.phase */
+    if (start == U64_MAX || ((po->flags & PTP_PEROUT_PHASE) && start >= period)) {
+        return -EINVAL;
+    }
+
+    mutex_lock(&p->cmd_lock);
+    p->po_start = start;
+    p->po_period = (u32)period;
+    p->po_width = (u32)width;
+    ret = t1s_po_arm(p);
+    if (ret) {
+        p->po_on = false;
+        p->po_errs++;
+        t1s_cmd(p->priv->tc6, T1S_CMD_PPS_STOP); /* no earlier request left running */
+    } else {
+        p->po_on = true;
+        p->po_arms++;
+    }
+    mutex_unlock(&p->cmd_lock);
+    return ret;
 }
 
 /* ---- transmit ---- */
@@ -541,13 +741,17 @@ int t1s_ptp_hwtstamp_set(struct lan865x_priv* priv, struct ifreq* ifr) {
 
 ssize_t t1s_ptp_stats(struct lan865x_priv* priv, char* buf, ssize_t n) {
     struct t1s_ptp* p = priv->t1s_ptp;
+    u32 next_ns;
+    u64 next_s;
 
     if (!p) {
         return n + sysfs_emit_at(buf, n, "ptp: off\n");
     }
-    return n + sysfs_emit_at(buf, n, "ptp: phc %d tx_cap %d inc 0x%08x tx_ok %llu tx_lost %llu tx_timeout %llu tx_noslot %llu\n",
-                             ptp_clock_index(p->clock), p->tx_cap, p->inc, p->tx_ok, p->tx_lost, p->tx_timeout,
-                             p->tx_noslot);
+    n += sysfs_emit_at(buf, n, "ptp: phc %d tx_cap %d inc 0x%08x tx_ok %llu tx_lost %llu tx_timeout %llu tx_noslot %llu\n",
+                       ptp_clock_index(p->clock), p->tx_cap, p->inc, p->tx_ok, p->tx_lost, p->tx_timeout, p->tx_noslot);
+    next_s = div_u64_rem(p->po_next, NSEC_PER_SEC, &next_ns);
+    return n + sysfs_emit_at(buf, n, "perout: on %d period %u width %u first %llu.%09u arms %llu rearms %llu errs %llu\n",
+                             p->po_on, p->po_period, p->po_width, next_s, next_ns, p->po_arms, p->po_rearms, p->po_errs);
 }
 
 /* ---- probe / remove ---- */
@@ -583,6 +787,7 @@ int t1s_ptp_init(struct lan865x_priv* priv) {
     p->info.gettimex64 = t1s_ptp_gettimex64;
     p->info.settime64 = t1s_ptp_settime64;
     p->info.enable = t1s_ptp_enable;
+    p->info.n_per_out = 1; /* the MAC's pps pin (fixed, no pin configuration) */
 
     p->clock = ptp_clock_register(&p->info, &priv->spi->dev);
     if (IS_ERR_OR_NULL(p->clock)) {
@@ -621,6 +826,13 @@ void t1s_ptp_exit(struct lan865x_priv* priv) {
         }
     }
     ptp_clock_unregister(p->clock);
+    /* no request can come any more: leave the pin low (best effort) */
+    mutex_lock(&p->cmd_lock);
+    if (p->po_on) {
+        p->po_on = false;
+        t1s_cmd(priv->tc6, T1S_CMD_PPS_STOP);
+    }
+    mutex_unlock(&p->cmd_lock);
     priv->t1s_ptp = NULL;
     kfree(p);
 }
