@@ -32,6 +32,8 @@ struct spi_device;
 #define T1S_MAC_CTRL_PROMISC BIT(4)
 #define T1S_MMS1_MAC_ADDR_L 0x00010002 /* addr[31:0]; addr[47:40] = first octet on the wire */
 #define T1S_MMS1_MAC_ADDR_H 0x00010003 /* .15:0 addr[47:32] */
+#define T1S_MMS1_MAX_FRAME 0x00010004  /* .15:0 longest frame DA..FCS accepted, reset 1518 */
+#define T1S_MAX_FRAME 1522             /* 1518 + 4 byte 802.1Q tag */
 #define T1S_MMS1_MCAST_HASH_L 0x00010005
 #define T1S_MMS1_MCAST_HASH_H 0x00010006
 #define T1S_MMS1_MAC_CAP 0x00010007

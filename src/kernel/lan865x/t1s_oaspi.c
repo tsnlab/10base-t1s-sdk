@@ -121,6 +121,15 @@ int t1s_oaspi_chip_init(struct oa_tc6* tc6) {
         }
     }
 
+    /* The MAC drops longer received frames: its reset value 1518 (DA..FCS)
+     * loses 802.1Q tagged frames of full size that Linux sends (1522).
+     * Set again by every recovery (oa_tc6_hw_reinit()).
+     */
+    ret = oa_tc6_write_register(tc6, T1S_MMS1_MAX_FRAME, T1S_MAX_FRAME);
+    if (ret) {
+        return ret;
+    }
+
     /* same as LAN865x NCR = TXEN | RXEN, NCFGR = no promiscuous */
     ret = oa_tc6_read_register(tc6, T1S_MMS1_MAC_CTRL, &v);
     if (ret) {
