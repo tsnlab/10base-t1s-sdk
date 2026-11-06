@@ -195,6 +195,13 @@ struct oa_tc6 {
 	 * another one to oa_tc6_init_chip().
 	 */
 	int (*chip_init)(struct oa_tc6 *tc6);
+	/* STATUS1 / IMASK1 are vendor specific (OPEN Alliance TC6 v1.1,
+	 * 9.2.9 / 9.2.12).  The STATUS1_* / INT_MASK1_* bits below are the
+	 * LAN8650/1 layout (DS60001734F 11.1.7 / 11.1.10), so they are only
+	 * used when the LAN865x init step runs.  Another MAC-PHY gets
+	 * neither its IMASK1 written nor its STATUS1 interpreted here.
+	 */
+	bool lan865x_status1;
 	u64 stats[OA_TC6_STAT_NUM];
 #ifdef FRAME_TIMESTAMP_ENABLE
 	u8 ongoing_tx_ts_capture_mode;
@@ -868,7 +875,7 @@ static int oa_tc6_unmask_macphy_error_interrupts(struct oa_tc6 *tc6)
 		regval &= ~INT_MASK0_LOSS_OF_FRAME_ERR_MASK;
 
 	ret = oa_tc6_write_register(tc6, OA_TC6_REG_INT_MASK0, regval);
-	if (ret || !err_irq)
+	if (ret || !err_irq || !tc6->lan865x_status1)
 		return ret;
 
 	/* DS60001734F 4.6.2: on TXNER/RXNER the transfer of Ethernet frames
@@ -1123,7 +1130,8 @@ static int oa_tc6_process_extended_status(struct oa_tc6 *tc6)
 		return ret;
 	}
 	value = st[0] & STATUS0_HANDLED;
-	st1 = st[1] & STATUS1_HANDLED;
+	/* STATUS1 is vendor specific: LAN8650/1 layout only */
+	st1 = tc6->lan865x_status1 ? st[1] & STATUS1_HANDLED : 0;
 
 	/* This function is called for each chunk received in a given SPI
 	 * transaction. In case, extended status bit is set in more than
@@ -2310,6 +2318,7 @@ struct oa_tc6 *oa_tc6_init_chip(struct spi_device *spi,
 	tc6->spi = spi;
 	tc6->netdev = netdev;
 	tc6->chip_init = chip_init ? chip_init : init_lan865x;
+	tc6->lan865x_status1 = tc6->chip_init == init_lan865x;
 	SET_NETDEV_DEV(netdev, &spi->dev);
 	mutex_init(&tc6->spi_ctrl_lock);
 	spin_lock_init(&tc6->tx_skb_lock);
