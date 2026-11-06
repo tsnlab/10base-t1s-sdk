@@ -82,6 +82,7 @@ static const char lan865x_hwstat_names[LAN865X_HWSTAT_NUM][ETH_GSTRING_LEN] = {
     [LAN865X_SW_WATCHDOG] = "drv_tx_watchdog",
     [LAN865X_SW_FATAL] = "drv_fatal_errors",
     [LAN865X_SW_KICKS] = "drv_tx_kicks",
+    [LAN865X_SW_STALL_SUPPRESSED] = "drv_tx_stall_suppressed",
     [LAN865X_SW_RCV_LIGHT_OK] = "drv_recovery_txen_ok",
     [LAN865X_SW_RCV_RESET_OK] = "drv_recovery_reset_ok",
     [LAN865X_SW_RCV_FAILED] = "drv_recovery_failed",
@@ -92,6 +93,7 @@ static const char lan865x_hwstat_names[LAN865X_HWSTAT_NUM][ETH_GSTRING_LEN] = {
     [LAN865X_SW_CDEN_CHANGES] = "drv_cden_changes",
     [LAN865X_SW_CDEN] = "drv_cden",
     [LAN865X_SW_PLCA_PST] = "drv_plca_pst",
+    [LAN865X_SW_PLCA_EN] = "drv_plca_en",
 };
 
 static void lan865x_add8(struct lan865x_priv* priv, int id, u32 reg, int shift) {
@@ -287,6 +289,39 @@ static void lan865x_trigger_recovery(struct lan865x_priv* priv, int reason) {
     schedule_delayed_work(&priv->rcv_work, msecs_to_jiffies(delay));
 }
 
+#define LAN865X_MMS4_PLCA_CTRL0_REG 0x0004CA01 /* CTRL0, CTRL1, STS consecutive */
+#define LAN865X_PLCA_EN BIT(15)
+#define LAN865X_PLCA_PST BIT(15)
+
+/* t1s: refresh the PLCA gauges (hw_lock held). Only called while a TX stall is
+ * suspected, so the SPI load does not grow in normal operation.  A failed read
+ * leaves the gauges alone and is counted: unknown state never suppresses.
+ */
+static void lan865x_t1s_poll_plca(struct lan865x_priv* priv) {
+    u32 plca[3]; /* PLCA_CTRL0, PLCA_CTRL1, PLCA_STS */
+
+    if (oa_tc6_read_registers(priv->tc6, LAN865X_MMS4_PLCA_CTRL0_REG, plca, 3)) {
+        priv->hwstats[LAN865X_SW_POLL_ERRORS]++;
+        priv->hwstats[LAN865X_SW_PLCA_EN] = 0;
+        priv->hwstats[LAN865X_SW_PLCA_PST] = 1;
+        return;
+    }
+    priv->hwstats[LAN865X_SW_PLCA_EN] = !!(plca[0] & LAN865X_PLCA_EN);
+    priv->hwstats[LAN865X_SW_PLCA_PST] = !!(plca[2] & LAN865X_PLCA_PST);
+}
+
+/* TXC = 0 is a legal state (OA TC6 v1.1 7.3.6 / 7.7): with PLCA enabled but not
+ * active (PST = 0: no BEACON seen) the node has no transmit opportunity and the
+ * chip withholds credits for as long as that lasts.  A reset cannot help and
+ * drops the queued frames.  Only a t1s MAC-PHY (standard PLCA registers) is
+ * judged; the gauges are refreshed by lan865x_t1s_poll_plca().  Chip-side
+ * evidence (fatal error callback, replay detection) is never gated.
+ * Safe in atomic context (ndo_tx_timeout): it reads the cached gauges only.
+ */
+static bool lan865x_tx_wait_is_legit(struct lan865x_priv* priv) {
+    return T1S_IS(priv) && READ_ONCE(priv->hwstats[LAN865X_SW_PLCA_EN]) && !READ_ONCE(priv->hwstats[LAN865X_SW_PLCA_PST]);
+}
+
 static void lan865x_fatal_cb(void* ctx) {
     struct lan865x_priv* priv = ctx;
 
@@ -298,6 +333,12 @@ void lan865x_health_tx_timeout(struct net_device* netdev, unsigned int txqueue) 
     struct lan865x_priv* priv = netdev_priv(netdev);
 
     priv->hwstats[LAN865X_SW_WATCHDOG]++;
+    if (lan865x_tx_wait_is_legit(priv)) {
+        /* same gate as the stall detector (cached gauges: this runs in timer context) */
+        priv->hwstats[LAN865X_SW_STALL_SUPPRESSED]++;
+        netdev_info(netdev, "TX watchdog while PLCA is enabled but not active (PST=0): no recovery\n");
+        return;
+    }
     lan865x_trigger_recovery(priv, LAN865X_RCV_WATCHDOG);
 }
 
@@ -306,6 +347,7 @@ static void lan865x_rebaseline(struct lan865x_priv* priv) {
     priv->replay_chip_base = priv->hwstats[LAN865X_HW_FTX];
     priv->replay_att_base = priv->hwstats[LAN865X_HW_TFTX];
     priv->stall_since = 0;
+    priv->wait_since = 0;
     priv->cden_cur = -1; /* init_lan865x() set CDEN = 1; re-apply the policy */
     priv->pst_ok_polls = 0;
 }
@@ -345,7 +387,33 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
 
     if (!st.tx_pending || st.tx_credits) {
         priv->stall_since = 0;
+        priv->wait_since = 0;
         return;
+    }
+
+    if (T1S_IS(priv)) {
+        lan865x_t1s_poll_plca(priv);
+        if (lan865x_tx_wait_is_legit(priv)) {
+            /* No PLCA transmit opportunity: waiting, not stalled.  The stall timer
+             * stays off, so the time spent here never counts once PLCA is back.
+             * One count per tx_stall_ms of waiting; log at the 1st, 2nd, 4th ... count.
+             */
+            priv->stall_since = 0;
+            if (!priv->wait_since) {
+                priv->wait_since = jiffies | 1;
+            } else if (!time_before(jiffies, priv->wait_since + msecs_to_jiffies(tx_stall_ms))) {
+                u64 n = ++priv->hwstats[LAN865X_SW_STALL_SUPPRESSED];
+
+                priv->wait_since = jiffies | 1;
+                if (!(n & (n - 1))) {
+                    netdev_info(priv->netdev,
+                                "TX credits 0 while PLCA is enabled but not active (PST=0): waiting, no recovery (%llu)\n",
+                                n);
+                }
+            }
+            return;
+        }
+        priv->wait_since = 0;
     }
 
     /* TX progress: the chip's TFTX on a LAN865x.  The t1s MAC has no

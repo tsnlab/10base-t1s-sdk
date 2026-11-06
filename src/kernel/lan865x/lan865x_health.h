@@ -65,6 +65,7 @@ enum lan865x_hwstat_id {
     LAN865X_SW_WATCHDOG,        /* ndo_tx_timeout */
     LAN865X_SW_FATAL,           /* oa_tc6 fatal error */
     LAN865X_SW_KICKS,           /* credits back but no IRQ: data transfer re-run */
+    LAN865X_SW_STALL_SUPPRESSED, /* TXC 0 while PLCA is enabled but not active: waiting, no recovery */
     LAN865X_SW_RCV_LIGHT_OK,    /* recovered by MAC_NCR.TXEN toggle */
     LAN865X_SW_RCV_RESET_OK,    /* recovered by MAC-PHY reset + reconfiguration */
     LAN865X_SW_RCV_FAILED,
@@ -77,6 +78,7 @@ enum lan865x_hwstat_id {
     LAN865X_SW_CDEN_CHANGES,
     LAN865X_SW_CDEN,     /* gauge: current CDCTL0.CDEN */
     LAN865X_SW_PLCA_PST, /* gauge: last PLCA_STS.PST */
+    LAN865X_SW_PLCA_EN,  /* gauge: last PLCA_CTRL0.EN (t1s, read while TX is stalled) */
     LAN865X_HWSTAT_NUM,
 };
 
