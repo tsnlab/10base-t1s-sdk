@@ -141,8 +141,8 @@ int t1s_oaspi_chip_init(struct oa_tc6* tc6) {
     }
 
     /* CONFIG0.ZARFE; SYNC is set by oa_tc6 after this hook.  CONFIG0.FTSE/FTSS
-     * stay 0: STDCAP.FTSC = 0, the receive timestamp comes from the MAC
-     * (TS_CFG), not from the TC6 layer
+     * stay 0: the receive timestamp is configured in the MAC (TS_CFG; with
+     * STDCAP.FTSC = 1 CONFIG0.FTSE / FTSS are an alias of it), see t1s_ptp.c
      */
     ret = oa_tc6_read_register(tc6, T1S_TC6_CONFIG0, &v);
     if (ret) {
