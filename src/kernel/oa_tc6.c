@@ -1418,6 +1418,8 @@ static int oa_tc6_prcs_rx_frame_end(struct oa_tc6 *tc6, u8 *payload, u16 size)
 		u16 cut = OA_TC6_UNNECESSARY_FOOTER_SIZE - size;
 
 		if (!tc6->rx_skb || tc6->rx_skb->len < cut) {
+			if (!tc6->rx_skb)	/* else cleanup counts the dropped skb */
+				tc6->netdev->stats.rx_dropped++;
 			oa_tc6_look_for_new_frame(tc6);
 			return 0;
 		}
