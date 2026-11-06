@@ -139,6 +139,7 @@ struct lan865x_priv {
     bool rcv_phy_started;
     unsigned long stall_since; /* jiffies, 0 = no stall suspected */
     u64 stall_tftx;            /* chip TFTX when the suspicion started */
+    unsigned long wait_since;  /* jiffies, 0 = not waiting for a PLCA transmit opportunity */
     u64 replay_host_base;      /* tx_packets at the last (re)start */
     u64 replay_chip_base;      /* chip FTX at the last (re)start */
     u64 replay_att_base;       /* chip TFTX at the last (re)start */
