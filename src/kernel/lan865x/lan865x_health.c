@@ -216,6 +216,11 @@ static void lan865x_poll_hw_stats(struct lan865x_priv* priv) {
  *  2  park the data path, software-reset the MAC-PHY, redo the full
  *     configuration (oa_tc6_hw_reinit() + lan865x_restore_hw_config()),
  *     restart.  Default.
+ * tx_stall_ms and PLCA: with PLCA active a node gets a transmit opportunity every
+ * PLCA cycle, at most node_count x (TO + burst count x longest frame).  That is
+ * milliseconds for realistic settings, but with many nodes and a large
+ * max_burst_count it can exceed tx_stall_ms; then raise tx_stall_ms above it.
+ * (PLCA enabled but not active is not a stall at all, see lan865x_tx_wait_is_legit().)
  * Recoveries closer than 10 s to the previous one are delayed with an
  * exponential back-off (1 s .. 30 s).  The PTP hardware clock restarts
  * from 0 after a reset.
@@ -225,7 +230,7 @@ static void lan865x_poll_hw_stats(struct lan865x_priv* priv) {
 #endif
 static unsigned int tx_stall_ms = LAN865X_DEF_TX_STALL_MS;
 module_param(tx_stall_ms, uint, 0644);
-MODULE_PARM_DESC(tx_stall_ms, "TX stall detection time in ms (also the netdev watchdog timeout), default 2000");
+MODULE_PARM_DESC(tx_stall_ms, "TX stall detection time in ms (also the netdev watchdog timeout), default 2000; keep it above the PLCA cycle (node_count x (TO + bursts x frame))");
 
 #ifndef LAN865X_DEF_RECOVERY_MODE
 #define LAN865X_DEF_RECOVERY_MODE 2
@@ -388,6 +393,13 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
     if (!st.tx_pending || st.tx_credits) {
         priv->stall_since = 0;
         priv->wait_since = 0;
+        /* The PLCA gauges are only fresh while a stall is suspected: drop them, so a
+         * later watchdog (e.g. credits > 0 but stuck) is never suppressed by an old
+         * PST = 0 from an earlier episode.
+         */
+        if (T1S_IS(priv)) {
+            priv->hwstats[LAN865X_SW_PLCA_EN] = 0;
+        }
         return;
     }
 
