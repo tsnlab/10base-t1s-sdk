@@ -179,6 +179,12 @@ struct oa_tc6 {
 	u16 tx_skb_offset;
 	u16 spi_data_tx_buf_offset;
 	u16 tx_credits;
+	/* Frames whose last chunk is in the SPI transfer being run. They are counted
+	 * in the netdev stats only after that transfer is accepted
+	 * (OA TC6 v1.1 7.5.1).
+	 */
+	u16 xfer_tx_packets;
+	u32 xfer_tx_bytes;
 	u8 rx_chunks_available;
 	bool wait_until_start_valid;
 	bool int_flag;
@@ -1775,8 +1781,8 @@ static void oa_tc6_add_tx_skb_to_spi_buf(struct oa_tc6 *tc6)
 		end_valid = OA_TC6_DATA_END_VALID;
 		end_byte_offset = length_to_copy - 1;
 		tc6->tx_skb_offset = 0;
-		tc6->netdev->stats.tx_bytes += tc6->ongoing_tx_skb->len;
-		tc6->netdev->stats.tx_packets++;
+		tc6->xfer_tx_bytes += tc6->ongoing_tx_skb->len;
+		tc6->xfer_tx_packets++;
 		kfree_skb(tc6->ongoing_tx_skb);
 		tc6->ongoing_tx_skb = NULL;
 	}
@@ -1853,6 +1859,24 @@ static u16 oa_tc6_prepare_spi_tx_buf_for_rx_chunks(struct oa_tc6 *tc6, u16 len)
 	return needed_empty_chunks * OA_TC6_CHUNK_SIZE + len;
 }
 
+/* The frames that ended in the transfer just run were freed while the transfer
+ * was built. Count them as sent only when the MAC-PHY accepted the transfer
+ * (no header bad, no device error), else as dropped: they may not have left.
+ * A footer parity error (-EAGAIN) counts as accepted: the MOSI state is unknown.
+ * TXBOE/TXBUE/TXFCSE in STATUS0 return 0 and are not handled here yet.
+ */
+static void oa_tc6_account_xfer_tx(struct oa_tc6 *tc6, bool ok)
+{
+	if (ok) {
+		tc6->netdev->stats.tx_packets += tc6->xfer_tx_packets;
+		tc6->netdev->stats.tx_bytes += tc6->xfer_tx_bytes;
+	} else {
+		tc6->netdev->stats.tx_dropped += tc6->xfer_tx_packets;
+	}
+	tc6->xfer_tx_packets = 0;
+	tc6->xfer_tx_bytes = 0;
+}
+
 static int oa_tc6_try_spi_transfer(struct oa_tc6 *tc6)
 {
 	int ret;
@@ -1861,6 +1885,8 @@ static int oa_tc6_try_spi_transfer(struct oa_tc6 *tc6)
 		u16 spi_len = 0;
 
 		tc6->spi_data_tx_buf_offset = 0;
+		tc6->xfer_tx_packets = 0;
+		tc6->xfer_tx_bytes = 0;
 
 		if (tc6->ongoing_tx_skb || tc6->waiting_tx_skb)
 			spi_len = oa_tc6_prepare_spi_tx_buf_for_tx_skbs(tc6);
@@ -1880,12 +1906,14 @@ static int oa_tc6_try_spi_transfer(struct oa_tc6 *tc6)
 
 		ret = oa_tc6_spi_transfer(tc6, OA_TC6_DATA_HEADER, spi_len);
 		if (ret) {
+			oa_tc6_account_xfer_tx(tc6, false);
 			netdev_err(tc6->netdev,
 				   "SPI data transfer failed: %d\n", ret);
 			return ret;
 		}
 
 		ret = oa_tc6_process_spi_data_rx_buf(tc6, spi_len);
+		oa_tc6_account_xfer_tx(tc6, !ret || ret == -EAGAIN);
 
 		if (ret && ret != -EAGAIN) {
 			oa_tc6_free_ongoing_skbs(tc6);
