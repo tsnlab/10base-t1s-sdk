@@ -827,6 +827,7 @@ static int lan865x_probe(struct spi_device *spi)
     g_tc6 = priv->tc6;
     if (!priv->tc6) {
         dev_err(&spi->dev, "oa_tc6_init failed\n");
+        ret = -ENODEV;
         goto oa_tc6_init_error;
     }
 
@@ -845,7 +846,8 @@ static int lan865x_probe(struct spi_device *spi)
 
     priv->plca_check_thread = kthread_run(lan865x_plca_check_thread_handler, priv, "lan865x-plca-check-thread");
     if (IS_ERR(priv->plca_check_thread)) {
-        dev_err(&spi->dev, "Failed to create PLCA status check thread: %ld\n", PTR_ERR(priv->plca_check_thread));
+        ret = PTR_ERR(priv->plca_check_thread);
+        dev_err(&spi->dev, "Failed to create PLCA status check thread: %d\n", ret);
         goto t1s_hat_fxl6408_init_error;
     }
 
@@ -905,6 +907,8 @@ ptp_device_init_error:
 #endif /* FRAME_TIMESTAMP_ENABLE */
 register_netdev_error:
 zero_align_receive_frame_enable_error:
+    /* the PLCA check thread uses priv: stop it before free_netdev() */
+    kthread_stop(priv->plca_check_thread);
 t1s_hat_fxl6408_init_error:
     t1s_hat_fxl6408_exit(priv);
 sysfs_create_error:
@@ -915,7 +919,7 @@ oa_tc6_init_error:
         oa_tc6_exit(priv->tc6);
     }
     free_netdev(netdev);
-    return -ENODEV;
+    return ret < 0 ? ret : -ENODEV;
 }
 
 static void lan865x_remove(struct spi_device *spi)
