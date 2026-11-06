@@ -97,6 +97,7 @@ struct ptp_device {
 };
 
 struct t1s_ptp;
+struct lan865x_variant;
 
 struct lan865x_priv {
     struct work_struct multicast_work;
@@ -116,7 +117,8 @@ struct lan865x_priv {
     struct mutex fxl6408_lock;
     bool fxl6408_initialized;
     u8 node_id;
-    u8 chip; /* LAN865X_CHIP_* (t1s_oaspi.h), from the DT match */
+    u8 chip;                               /* LAN865X_CHIP_* (t1s_oaspi.h), from the DT match */
+    const struct lan865x_variant* variant; /* lan865x_variant.h */
 
     struct task_struct* plca_check_thread;
 
