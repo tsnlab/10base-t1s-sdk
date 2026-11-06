@@ -15,9 +15,29 @@
 
 struct oa_tc6;
 
+/* MAC-PHY specific part of the driver (vendor code lives in the MAC driver):
+ * chip_init  - step of the init and the reinit sequence after the TC6 software
+ *              reset and the error IRQ unmask, before CONFIG0.SYNC / the data
+ *              transfer (NULL = none);
+ * imask1_unmask / status1_handled / status1_fatal / status1_warn - bits of the
+ *              vendor-specific OA_IMASK1 / OA_STATUS1 (TC6 v1.1 9.2.9 / 9.2.12):
+ *              unmasked at init (with err_irq), cleared and counted on EXST,
+ *              fatal (-ENODEV), logged.  0 = STATUS1 / IMASK1 left alone.
+ */
+struct oa_tc6_chip_ops {
+    int (*chip_init)(struct oa_tc6* tc6);
+    u32 imask1_unmask;
+    u32 status1_handled;
+    u32 status1_fatal;
+    u32 status1_warn;
+};
+
+/* no MAC-PHY specific part */
 struct oa_tc6* oa_tc6_init(struct spi_device* spi, struct net_device* netdev);
-/* chip_init replaces init_lan865x() in init and reinit (NULL = init_lan865x()) */
-struct oa_tc6* oa_tc6_init_chip(struct spi_device* spi, struct net_device* netdev, int (*chip_init)(struct oa_tc6* tc6));
+/* only the init step (no vendor STATUS1 / IMASK1 bits) */
+struct oa_tc6* oa_tc6_init_chip(struct spi_device* spi, struct net_device* netdev,
+                                int (*chip_init)(struct oa_tc6* tc6));
+struct oa_tc6* oa_tc6_init_ops(struct spi_device* spi, struct net_device* netdev, const struct oa_tc6_chip_ops* ops);
 void oa_tc6_exit(struct oa_tc6* tc6);
 int oa_tc6_write_register(struct oa_tc6* tc6, u32 address, u32 value);
 int oa_tc6_write_registers(struct oa_tc6* tc6, u32 address, u32 value[], u8 length);
@@ -39,9 +59,6 @@ void oa_tc6_set_frame_ts(struct oa_tc6* tc6, u8 rx_ts_len,
                          void (*rx_ts_cb)(void* ctx, struct sk_buff* skb, const u8* ts), void* ctx, bool rtsa);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 int oa_tc6_zero_align_receive_frame_enable(struct oa_tc6* tc6);
-
-u8 indirect_read(struct oa_tc6* tc6, u8 addr, u8 mask);
-int init_lan865x(struct oa_tc6* tc6);
 
 /* MAC-PHY error/status event counters (OA_STATUS0/OA_STATUS1 bits seen
  * through the footer EXST path, plus footer errors).

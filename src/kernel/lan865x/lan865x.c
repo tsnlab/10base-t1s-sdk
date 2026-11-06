@@ -26,6 +26,7 @@
 #include "lan865x_arch.h"
 #include "lan865x_sysfs.h"
 #include "t1s_hat_fxl6408.h"
+#include "lan865x_chip.h"
 #include "t1s_oaspi.h"
 #include <linux/version.h>
 
@@ -823,7 +824,8 @@ static int lan865x_probe(struct spi_device *spi)
     }
 
     /* Initialize oa_tc6 and lan8651*/
-    priv->tc6 = oa_tc6_init_chip(spi, netdev, chip == LAN865X_CHIP_T1S ? t1s_oaspi_chip_init : NULL);
+    priv->tc6 = chip == LAN865X_CHIP_T1S ? oa_tc6_init_chip(spi, netdev, t1s_oaspi_chip_init)
+                                         : oa_tc6_init_ops(spi, netdev, &lan865x_chip_ops);
     g_tc6 = priv->tc6;
     if (!priv->tc6) {
         dev_err(&spi->dev, "oa_tc6_init failed\n");

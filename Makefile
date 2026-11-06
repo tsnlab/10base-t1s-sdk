@@ -123,6 +123,7 @@ $(BUILD_DIR)/Makefile: FORCE
     ../$(SRC_DIR)/lan865x.o\
     ../$(SRC_DIR)/lan865x_ptp.o\
     ../$(SRC_DIR)/lan865x_arch.o\
+    ../$(SRC_DIR)/lan865x_chip.o\
     ../$(SRC_DIR)/lan865x_sysfs.o\
     ../$(SRC_DIR)/lan865x_health.o\
     ../$(SRC_DIR)/t1s_hat_fxl6408.o\
