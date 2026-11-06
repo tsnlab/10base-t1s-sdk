@@ -1829,7 +1829,9 @@ static u16 oa_tc6_prepare_spi_tx_buf_for_rx_chunks(struct oa_tc6 *tc6, u16 len)
 
 /* The frames that ended in the transfer just run were freed while the transfer
  * was built. Count them as sent only when the MAC-PHY accepted the transfer
- * (no header bad, no device error), else as dropped: they did not leave.
+ * (no header bad, no device error), else as dropped: they may not have left.
+ * A footer parity error (-EAGAIN) counts as accepted: the MOSI state is unknown.
+ * TXBOE/TXBUE/TXFCSE in STATUS0 return 0 and are not handled here yet.
  */
 static void oa_tc6_account_xfer_tx(struct oa_tc6 *tc6, bool ok)
 {
