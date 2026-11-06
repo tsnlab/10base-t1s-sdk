@@ -805,6 +805,7 @@ const char oa_tc6_stat_names[OA_TC6_STAT_NUM][32] = {
 	[OA_TC6_STAT_FATAL] = "oa_fatal_errors",
 	[OA_TC6_STAT_FOOTER_PARITY] = "oa_footer_parity_errors",
 	[OA_TC6_STAT_RX_TS_PARITY] = "oa_rx_timestamp_parity_errors",
+	[OA_TC6_STAT_RX_TS_SPLIT] = "oa_rx_timestamp_split_drops",
 };
 EXPORT_SYMBOL_GPL(oa_tc6_stat_names);
 
@@ -1301,9 +1302,13 @@ static int oa_tc6_rx_ts_len(struct oa_tc6 *tc6, u8 *payload, u16 size, u32 foote
 	if (!FIELD_GET(OA_TC6_DATA_FOOTER_RTSA, footer))
 		return 0;
 
-	/* The timestamp is split over two chunks: not handled, drop the frame. */
-	if (size < OA_TC6_TIMESTAMP_SIZE)
+	/* The timestamp is split over two chunks (permitted by 7.8.1): not stitched yet.
+	 * Drop only this frame and say so in a counter.
+	 */
+	if (size < OA_TC6_TIMESTAMP_SIZE) {
+		tc6->stats[OA_TC6_STAT_RX_TS_SPLIT]++;
 		return -EAGAIN;
+	}
 
 	ts = ((u64)ntohl(net_timestamp[0]) << 32) | ntohl(net_timestamp[1]);
 	if ((hweight64(ts) + FIELD_GET(OA_TC6_DATA_FOOTER_RTSP, footer)) % 2 == 0) {
@@ -1338,9 +1343,13 @@ static int oa_tc6_prcs_complete_rx_frame(struct oa_tc6 *tc6, u8 *payload,
 	int ts_len = oa_tc6_rx_ts_len(tc6, payload, size, footer, &ts_valid);
 
 	if (ts_len < 0) {
+		/* drop this frame only: the rest of its chunks are skipped until the next
+		 * start-valid chunk. Return 0, not -EAGAIN: the caller would re-arm the
+		 * frame search after the loop and discard good frames later in the transfer.
+		 */
 		oa_tc6_look_for_new_frame(tc6);
 		tc6->netdev->stats.rx_dropped++;
-		return ts_len;
+		return 0;
 	}
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
@@ -1372,9 +1381,13 @@ static int oa_tc6_prcs_rx_frame_start(struct oa_tc6 *tc6, u8 *payload, u16 size,
 	int ts_len = oa_tc6_rx_ts_len(tc6, payload, size, footer, &ts_valid);
 
 	if (ts_len < 0) {
+		/* drop this frame only: the rest of its chunks are skipped until the next
+		 * start-valid chunk. Return 0, not -EAGAIN: the caller would re-arm the
+		 * frame search after the loop and discard good frames later in the transfer.
+		 */
 		oa_tc6_look_for_new_frame(tc6);
 		tc6->netdev->stats.rx_dropped++;
-		return ts_len;
+		return 0;
 	}
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
@@ -1396,8 +1409,21 @@ static int oa_tc6_prcs_rx_frame_end(struct oa_tc6 *tc6, u8 *payload, u16 size)
 	int ret;
 
 #ifdef FRAME_TIMESTAMP_ENABLE
-	/* NOTE: Remove unnecessary last 4 bytes. */
-	ret = oa_tc6_update_rx_skb(tc6, payload, size - OA_TC6_UNNECESSARY_FOOTER_SIZE);
+	/* NOTE: Remove unnecessary last 4 bytes. With EBO < 3 part of them was already
+	 * appended from the previous chunk: trim it there (size - 4 would wrap).
+	 */
+	if (size >= OA_TC6_UNNECESSARY_FOOTER_SIZE) {
+		ret = oa_tc6_update_rx_skb(tc6, payload, size - OA_TC6_UNNECESSARY_FOOTER_SIZE);
+	} else {
+		u16 cut = OA_TC6_UNNECESSARY_FOOTER_SIZE - size;
+
+		if (!tc6->rx_skb || tc6->rx_skb->len < cut) {
+			oa_tc6_look_for_new_frame(tc6);
+			return 0;
+		}
+		skb_trim(tc6->rx_skb, tc6->rx_skb->len - cut);
+		ret = 0;
+	}
 #else /* FRAME_TIMESTAMP_ENABLE */
 	ret = oa_tc6_update_rx_skb(tc6, payload, size);
 #endif /* FRAME_TIMESTAMP_ENABLE */

@@ -57,6 +57,7 @@ enum oa_tc6_stat_id {
     OA_TC6_STAT_FATAL,         /* fatal errors (traffic disabled) */
     OA_TC6_STAT_FOOTER_PARITY, /* receive footer with a parity error (MISO) */
     OA_TC6_STAT_RX_TS_PARITY,  /* receive timestamp (RTSP) parity error */
+    OA_TC6_STAT_RX_TS_SPLIT,   /* frame dropped: receive timestamp split over two chunks */
     OA_TC6_STAT_NUM,
 };
 
