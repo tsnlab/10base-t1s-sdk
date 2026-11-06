@@ -1365,8 +1365,12 @@ static void oa_tc6_set_rx_hwtstamp(struct oa_tc6 *tc6, u8 *payload, u16 ts_len)
  *   rx_ts_rtsa = 0 (FTSC = 0, an older bitstream): the MAC inserts it in front
  *     of every frame (MMS1 TS_CFG.FTSE) and the footer RTSA stays 0, so the
  *     length comes from the MAC driver.
- * A start chunk too short to hold the timestamp and a frame byte (SWO near the
- * chunk end without ZARFE) drops the frame.
+ * A start chunk too short to hold the whole timestamp (SWO near the chunk end
+ * without ZARFE) drops that frame only.  A timestamp that fills the chunk exactly
+ * is fine: the frame then starts in the next chunk (7.8.1).
+ * Returns 0 (frame goes on), > 0 (this frame was dropped and counted, nothing more
+ * to do for it: not -EAGAIN, the caller would re-arm the frame search after the
+ * loop and discard good frames later in the same transfer), or < 0 never.
  */
 static int oa_tc6_rx_frame_ts(struct oa_tc6 *tc6, u8 **payload, u16 *size, u32 footer)
 {
@@ -1377,12 +1381,12 @@ static int oa_tc6_rx_frame_ts(struct oa_tc6 *tc6, u8 **payload, u16 *size, u32 f
 		return 0;
 	if (tc6->rx_ts_rtsa && !FIELD_GET(OA_TC6_DATA_FOOTER_RTSA, footer))
 		return 0;
-	if (*size <= len) {
-		/* counted in rx_dropped by oa_tc6_cleanup_ongoing_rx_skb() */
+	if (*size < len) {
 		if (tc6->rx_ts_rtsa)
 			tc6->stats[OA_TC6_STAT_RX_TS_SPLIT]++;
+		/* rx_skb is allocated by now: this frees it and counts rx_dropped */
 		oa_tc6_look_for_new_frame(tc6);
-		return -EAGAIN;
+		return 1;
 	}
 	if (tc6->rx_ts_rtsa) {
 		u64 ts = 0;
@@ -1431,6 +1435,8 @@ static int oa_tc6_prcs_complete_rx_frame(struct oa_tc6 *tc6, u8 *payload,
 	ret = oa_tc6_update_rx_skb(tc6, &payload[ts_len], size - ts_len);
 #else /* FRAME_TIMESTAMP_ENABLE */
 	ret = oa_tc6_rx_frame_ts(tc6, &payload, &size, footer);
+	if (ret > 0)
+		return 0;	/* this frame is dropped, the transfer goes on */
 	if (!ret)
 		ret = oa_tc6_update_rx_skb(tc6, payload, size);
 #endif /* FRAME_TIMESTAMP_ENABLE */
@@ -1471,6 +1477,8 @@ static int oa_tc6_prcs_rx_frame_start(struct oa_tc6 *tc6, u8 *payload, u16 size,
 	return oa_tc6_update_rx_skb(tc6, &payload[ts_len], size - ts_len);
 #else /* FRAME_TIMESTAMP_ENABLE */
 	ret = oa_tc6_rx_frame_ts(tc6, &payload, &size, footer);
+	if (ret > 0)
+		return 0;	/* this frame is dropped, the transfer goes on */
 	if (ret)
 		return ret;
 	return oa_tc6_update_rx_skb(tc6, payload, size);
