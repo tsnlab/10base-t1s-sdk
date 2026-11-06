@@ -27,6 +27,14 @@ int oa_tc6_read_registers(struct oa_tc6* tc6, u32 address, u32 value[], u8 lengt
 netdev_tx_t oa_tc6_start_xmit(struct oa_tc6* tc6, struct sk_buff* skb, u8 ts_capture_mode);
 #else  /* FRAME_TIMESTAMP_ENABLE */
 netdev_tx_t oa_tc6_start_xmit(struct oa_tc6* tc6, struct sk_buff* skb);
+/* Run-time frame timestamps (TC6 v1.1 7.8) for a MAC driver that wants them
+ * in a TIMESTAMP=0 build (t1s-oaspi): TSC of one frame (0 none, 1..3 =
+ * TTSCA..C, sent with SV = 1), and the receive timestamp in front of every
+ * frame (rx_ts_len bytes, 0 = none; set from the chip_init hook).
+ */
+netdev_tx_t oa_tc6_start_xmit_tsc(struct oa_tc6* tc6, struct sk_buff* skb, u8 tsc);
+void oa_tc6_set_frame_ts(struct oa_tc6* tc6, u8 rx_ts_len,
+                         void (*rx_ts_cb)(void* ctx, struct sk_buff* skb, const u8* ts), void* ctx);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 int oa_tc6_zero_align_receive_frame_enable(struct oa_tc6* tc6);
 

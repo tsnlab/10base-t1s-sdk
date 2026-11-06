@@ -265,6 +265,24 @@ static int lan865x_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INF
 }
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
+#ifndef FRAME_TIMESTAMP_ENABLE
+/* t1s-oaspi: own PHC and frame timestamps (t1s_ptp.c); the LAN865x path of a
+ * TIMESTAMP=0 build keeps lan865x_ethtool_ops (no get_ts_info)
+ */
+static int t1s_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INFO* ts_info) {
+    return t1s_ptp_get_ts_info(netdev_priv(netdev), ts_info);
+}
+
+static const struct ethtool_ops t1s_ethtool_ops = {
+    .get_link_ksettings = phy_ethtool_get_link_ksettings,
+    .set_link_ksettings = phy_ethtool_set_link_ksettings,
+    .get_ts_info = t1s_ethtool_get_ts_info,
+    .get_sset_count = lan865x_get_sset_count,
+    .get_strings = lan865x_get_strings,
+    .get_ethtool_stats = lan865x_get_ethtool_stats,
+};
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
 static const struct ethtool_ops lan865x_ethtool_ops = {
     .get_link_ksettings = phy_ethtool_get_link_ksettings,
     .set_link_ksettings = phy_ethtool_set_link_ksettings,
@@ -476,6 +494,26 @@ static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
 
     return oa_tc6_start_xmit(priv->tc6, skb, ts_capture_mode);
 #else /* FRAME_TIMESTAMP_ENABLE */
+    if (T1S_IS(priv)) {
+        u8 tsc = t1s_ptp_tx_request(priv, skb);
+        netdev_tx_t rc;
+
+        /* Software TX timestamp (SOF_TIMESTAMPING_TX_SOFTWARE) only for a
+         * frame that was queued: on NETDEV_TX_BUSY the stack sends the same
+         * skb again, and a second timestamp would sit in the socket error
+         * queue (ptp4l: "error on fda[0]", port FAULTY).  The extra reference
+         * keeps the skb while the SPI thread may already be done with it.
+         */
+        skb_get(skb);
+        rc = oa_tc6_start_xmit_tsc(priv->tc6, skb, tsc);
+        if (rc == NETDEV_TX_BUSY) {
+            t1s_ptp_tx_cancel(priv, tsc);
+        } else {
+            skb_tx_timestamp(skb);
+        }
+        consume_skb(skb);
+        return rc;
+    }
     return oa_tc6_start_xmit(priv->tc6, skb);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 }
@@ -600,6 +638,14 @@ static int lan865x_netdev_ioctl(struct net_device* netdev, struct ifreq* ifr, in
         return phy_do_ioctl_running(netdev, ifr, cmd);
     }
 #else /* FRAME_TIMESTAMP_ENABLE */
+    struct lan865x_priv* priv = netdev_priv(netdev);
+
+    if (T1S_IS(priv) && cmd == SIOCGHWTSTAMP) {
+        return t1s_ptp_hwtstamp_get(priv, ifr);
+    }
+    if (T1S_IS(priv) && cmd == SIOCSHWTSTAMP) {
+        return t1s_ptp_hwtstamp_set(priv, ifr);
+    }
     return phy_do_ioctl_running(netdev, ifr, cmd);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 }
@@ -820,6 +866,11 @@ static int lan865x_probe(struct spi_device *spi)
     netdev->irq = spi->irq;
     netdev->netdev_ops = &lan865x_netdev_ops;
     netdev->ethtool_ops = &lan865x_ethtool_ops;
+#ifndef FRAME_TIMESTAMP_ENABLE
+    if (chip == LAN865X_CHIP_T1S) {
+        netdev->ethtool_ops = &t1s_ethtool_ops;
+    }
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
     ret = register_netdev(netdev);
     if (ret) {
@@ -835,6 +886,13 @@ static int lan865x_probe(struct spi_device *spi)
     }
 #else /* FRAME_TIMESTAMP_ENABLE */
     priv->ptpdev = NULL;
+    if (chip == LAN865X_CHIP_T1S) {
+        ret = t1s_ptp_init(priv);
+        if (ret) {
+            /* the network interface works without it */
+            dev_err(&spi->dev, "t1s-oaspi: PTP clock not registered: %d\n", ret);
+        }
+    }
 #endif /* FRAME_TIMESTAMP_ENABLE */
     dev_info(&spi->dev, "LAN865x registered with MAC %pM\n", netdev->dev_addr);
     lan865x_health_start(priv);
@@ -890,6 +948,9 @@ static void lan865x_remove(struct spi_device *spi)
     unregister_netdev(netdev);
 
     dev_info(&spi->dev, "lan865x: MAC after unregister %pM\n", netdev->dev_addr);
+#ifndef FRAME_TIMESTAMP_ENABLE
+    t1s_ptp_exit(priv);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 #ifdef FRAME_TIMESTAMP_ENABLE
     if (priv->ptpdev) {

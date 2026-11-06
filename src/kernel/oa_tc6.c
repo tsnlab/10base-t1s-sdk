@@ -111,9 +111,7 @@
 #define OA_TC6_DATA_HEADER_START_WORD_OFFSET GENMASK(19, 16)
 #define OA_TC6_DATA_HEADER_END_VALID BIT(14)
 #define OA_TC6_DATA_HEADER_END_BYTE_OFFSET GENMASK(13, 8)
-#ifdef FRAME_TIMESTAMP_ENABLE
 #define OA_TC6_DATA_HEADER_TIMESTAMP_CAPTURE GENMASK(7, 6)
-#endif /* FRAME_TIMESTAMP_ENABLE */
 #define OA_TC6_DATA_HEADER_PARITY BIT(0)
 
 /* Data footer */
@@ -198,6 +196,20 @@ struct oa_tc6 {
 #ifdef FRAME_TIMESTAMP_ENABLE
 	u8 ongoing_tx_ts_capture_mode;
 	u8 waiting_tx_ts_capture_mode;
+#else /* FRAME_TIMESTAMP_ENABLE */
+	/* Run-time frame timestamps for a MAC driver that registers them with
+	 * oa_tc6_set_frame_ts() (t1s-oaspi; the LAN865x path never does, so
+	 * for it these stay 0 and nothing changes).  TC6 v1.1 7.8.
+	 *   rx_ts_len : bytes of timestamp in front of every received frame
+	 *               (0, 4 or 8), handed to rx_ts_cb and stripped
+	 *   *_tx_tsc  : TSC (7.3.6) of the waiting / ongoing tx skb, sent in
+	 *               the header of the chunk with SV = 1 (7.8.2)
+	 */
+	u8 rx_ts_len;
+	void (*rx_ts_cb)(void *ctx, struct sk_buff *skb, const u8 *ts);
+	void *rx_ts_ctx;
+	u8 ongoing_tx_tsc;
+	u8 waiting_tx_tsc;
 #endif /* FRAME_TIMESTAMP_ENABLE */
 };
 
@@ -902,6 +914,8 @@ static struct sk_buff *oa_tc6_detach_waiting_tx_skb(struct oa_tc6 *tc6)
 	tc6->waiting_tx_skb = NULL;
 #ifdef FRAME_TIMESTAMP_ENABLE
 	tc6->waiting_tx_ts_capture_mode = 0;
+#else /* FRAME_TIMESTAMP_ENABLE */
+	tc6->waiting_tx_tsc = 0;
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
 	return skb;
@@ -973,6 +987,8 @@ static void oa_tc6_cleanup_ongoing_tx_skb(struct oa_tc6 *tc6)
 	tc6->ongoing_tx_skb = NULL;
 #ifdef FRAME_TIMESTAMP_ENABLE
 	tc6->ongoing_tx_ts_capture_mode = 0;
+#else /* FRAME_TIMESTAMP_ENABLE */
+	tc6->ongoing_tx_tsc = 0;
 #endif /* FRAME_TIMESTAMP_ENABLE */
 	tc6->tx_skb_offset = 0;
 }
@@ -1296,6 +1312,34 @@ static void oa_tc6_set_rx_hwtstamp(struct oa_tc6 *tc6, u8 *payload)
 }
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
+#ifndef FRAME_TIMESTAMP_ENABLE
+/* TC6 v1.1 7.8.1: the first rx_ts_len bytes of a frame (start chunk, the
+ * frame start is word aligned) are its timestamp, MSB first.  Hand it to the
+ * MAC driver and strip it.  t1s-oaspi: the MAC inserts it in front of the
+ * frame (MMS1 TS_CFG.FTSE) while the footer RTSA stays 0 (STDCAP.FTSC = 0),
+ * so the length comes from the MAC driver, not from RTSA.  A start chunk
+ * too short to hold the timestamp and a frame byte (SWO near the chunk end
+ * without ZARFE) drops the frame.
+ */
+static int oa_tc6_rx_frame_ts(struct oa_tc6 *tc6, u8 **payload, u16 *size)
+{
+	u8 len = READ_ONCE(tc6->rx_ts_len);
+
+	if (!len)
+		return 0;
+	if (*size <= len) {
+		/* counted in rx_dropped by oa_tc6_cleanup_ongoing_rx_skb() */
+		oa_tc6_look_for_new_frame(tc6);
+		return -EAGAIN;
+	}
+	if (tc6->rx_ts_cb)
+		tc6->rx_ts_cb(tc6->rx_ts_ctx, tc6->rx_skb, *payload);
+	*payload += len;
+	*size -= len;
+	return 0;
+}
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
 static int oa_tc6_prcs_complete_rx_frame(struct oa_tc6 *tc6, u8 *payload,
 					 u16 size)
 {
@@ -1309,7 +1353,9 @@ static int oa_tc6_prcs_complete_rx_frame(struct oa_tc6 *tc6, u8 *payload,
 	oa_tc6_set_rx_hwtstamp(tc6, payload);
 	ret = oa_tc6_update_rx_skb(tc6, &payload[OA_TC6_TIMESTAMP_SIZE], size - OA_TC6_TIMESTAMP_SIZE);
 #else /* FRAME_TIMESTAMP_ENABLE */
-	ret = oa_tc6_update_rx_skb(tc6, payload, size);
+	ret = oa_tc6_rx_frame_ts(tc6, &payload, &size);
+	if (!ret)
+		ret = oa_tc6_update_rx_skb(tc6, payload, size);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 	if (ret)
 		return ret;
@@ -1331,6 +1377,9 @@ static int oa_tc6_prcs_rx_frame_start(struct oa_tc6 *tc6, u8 *payload, u16 size)
 	oa_tc6_set_rx_hwtstamp(tc6, payload);
 	return oa_tc6_update_rx_skb(tc6, &payload[OA_TC6_TIMESTAMP_SIZE], size - OA_TC6_TIMESTAMP_SIZE);
 #else /* FRAME_TIMESTAMP_ENABLE */
+	ret = oa_tc6_rx_frame_ts(tc6, &payload, &size);
+	if (ret)
+		return ret;
 	return oa_tc6_update_rx_skb(tc6, payload, size);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 }
@@ -1537,13 +1586,8 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 	return ret;
 }
 
-#ifdef FRAME_TIMESTAMP_ENABLE
 static __be32 oa_tc6_prepare_data_header(bool data_valid, bool start_valid,
 					 bool end_valid, u8 end_byte_offset, u8 ts_capture_mode)
-#else /* FRAME_TIMESTAMP_ENABLE */
-static __be32 oa_tc6_prepare_data_header(bool data_valid, bool start_valid,
-					 bool end_valid, u8 end_byte_offset)
-#endif /* FRAME_TIMESTAMP_ENABLE */
 {
 	u32 header =
 		FIELD_PREP(OA_TC6_DATA_HEADER_DATA_NOT_CTRL,
@@ -1552,9 +1596,7 @@ static __be32 oa_tc6_prepare_data_header(bool data_valid, bool start_valid,
 		FIELD_PREP(OA_TC6_DATA_HEADER_START_VALID, start_valid) |
 		FIELD_PREP(OA_TC6_DATA_HEADER_END_VALID, end_valid) |
 		FIELD_PREP(OA_TC6_DATA_HEADER_END_BYTE_OFFSET, end_byte_offset);
-#ifdef FRAME_TIMESTAMP_ENABLE
 	header |= FIELD_PREP(OA_TC6_DATA_HEADER_TIMESTAMP_CAPTURE, ts_capture_mode);
-#endif /* FRAME_TIMESTAMP_ENABLE */
 
 	header |= FIELD_PREP(OA_TC6_DATA_HEADER_PARITY,
 			     oa_tc6_get_parity(header));
@@ -1571,9 +1613,7 @@ static void oa_tc6_add_tx_skb_to_spi_buf(struct oa_tc6 *tc6)
 	enum oa_tc6_data_start_valid_info start_valid;
 	u8 end_byte_offset = 0;
 	u16 length_to_copy;
-#ifdef FRAME_TIMESTAMP_ENABLE
 	u8 ts_capture_mode = 0;
-#endif /* FRAME_TIMESTAMP_ENABLE */
 
 	/* Initial value is assigned here to avoid more than 80 characters in
 	 * the declaration place.
@@ -1595,6 +1635,10 @@ static void oa_tc6_add_tx_skb_to_spi_buf(struct oa_tc6 *tc6)
 		 */
 		ts_capture_mode = tc6->ongoing_tx_ts_capture_mode;
 		tc6->ongoing_tx_ts_capture_mode = 0;
+#else /* FRAME_TIMESTAMP_ENABLE */
+		/* TC6 v1.1 7.8.2: TSC is valid only in the chunk with SV = 1 */
+		ts_capture_mode = tc6->ongoing_tx_tsc;
+		tc6->ongoing_tx_tsc = 0;
 #endif /* FRAME_TIMESTAMP_ENABLE */
 	}
 
@@ -1621,13 +1665,8 @@ static void oa_tc6_add_tx_skb_to_spi_buf(struct oa_tc6 *tc6)
 		tc6->ongoing_tx_skb = NULL;
 	}
 
-#ifdef FRAME_TIMESTAMP_ENABLE
 	*tx_buf = oa_tc6_prepare_data_header(OA_TC6_DATA_VALID, start_valid,
 					     end_valid, end_byte_offset, ts_capture_mode);
-#else /* FRAME_TIMESTAMP_ENABLE */
-	*tx_buf = oa_tc6_prepare_data_header(OA_TC6_DATA_VALID, start_valid,
-					     end_valid, end_byte_offset);
-#endif /* FRAME_TIMESTAMP_ENABLE */
 	tc6->spi_data_tx_buf_offset += OA_TC6_CHUNK_SIZE;
 }
 
@@ -1647,6 +1686,9 @@ static u16 oa_tc6_prepare_spi_tx_buf_for_tx_skbs(struct oa_tc6 *tc6)
 #ifdef FRAME_TIMESTAMP_ENABLE
 			tc6->ongoing_tx_ts_capture_mode = tc6->waiting_tx_ts_capture_mode;
 			tc6->waiting_tx_ts_capture_mode = 0;
+#else /* FRAME_TIMESTAMP_ENABLE */
+			tc6->ongoing_tx_tsc = tc6->waiting_tx_tsc;
+			tc6->waiting_tx_tsc = 0;
 #endif /* FRAME_TIMESTAMP_ENABLE */
 			spin_unlock_bh(&tc6->tx_skb_lock);
 		}
@@ -1663,15 +1705,9 @@ static void oa_tc6_add_empty_chunks_to_spi_buf(struct oa_tc6 *tc6,
 {
 	__be32 header;
 
-#ifdef FRAME_TIMESTAMP_ENABLE
 	header = oa_tc6_prepare_data_header(OA_TC6_DATA_INVALID,
 					    OA_TC6_DATA_START_INVALID,
 					    OA_TC6_DATA_END_INVALID, 0, 0);
-#else /* FRAME_TIMESTAMP_ENABLE */
-	header = oa_tc6_prepare_data_header(OA_TC6_DATA_INVALID,
-					    OA_TC6_DATA_START_INVALID,
-					    OA_TC6_DATA_END_INVALID, 0);
-#endif /* FRAME_TIMESTAMP_ENABLE */
 
 	while (needed_empty_chunks--) {
 		__be32 *tx_buf =
@@ -1862,6 +1898,15 @@ EXPORT_SYMBOL_GPL(oa_tc6_zero_align_receive_frame_enable);
 netdev_tx_t oa_tc6_start_xmit(struct oa_tc6 *tc6, struct sk_buff *skb, u8 ts_capture_mode)
 #else /* FRAME_TIMESTAMP_ENABLE */
 netdev_tx_t oa_tc6_start_xmit(struct oa_tc6 *tc6, struct sk_buff *skb)
+{
+	return oa_tc6_start_xmit_tsc(tc6, skb, 0);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_start_xmit);
+
+/* oa_tc6_start_xmit() with a TC6 TSC (7.3.6: 0 none, 1..3 = capture register
+ * A..C) for the frame; NETDEV_TX_BUSY leaves the request with the caller.
+ */
+netdev_tx_t oa_tc6_start_xmit_tsc(struct oa_tc6 *tc6, struct sk_buff *skb, u8 ts_capture_mode)
 #endif /* FRAME_TIMESTAMP_ENABLE */
 {
 	if (skb_linearize(skb)) {
@@ -1884,6 +1929,8 @@ netdev_tx_t oa_tc6_start_xmit(struct oa_tc6 *tc6, struct sk_buff *skb)
 	tc6->waiting_tx_skb = skb;
 #ifdef FRAME_TIMESTAMP_ENABLE
 	tc6->waiting_tx_ts_capture_mode = ts_capture_mode;
+#else /* FRAME_TIMESTAMP_ENABLE */
+	tc6->waiting_tx_tsc = ts_capture_mode & 3;
 #endif /* FRAME_TIMESTAMP_ENABLE */
 	spin_unlock_bh(&tc6->tx_skb_lock);
 
@@ -1892,7 +1939,11 @@ netdev_tx_t oa_tc6_start_xmit(struct oa_tc6 *tc6, struct sk_buff *skb)
 
 	return NETDEV_TX_OK;
 }
+#ifdef FRAME_TIMESTAMP_ENABLE
 EXPORT_SYMBOL_GPL(oa_tc6_start_xmit);
+#else /* FRAME_TIMESTAMP_ENABLE */
+EXPORT_SYMBOL_GPL(oa_tc6_start_xmit_tsc);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 /* PHY Vendor Specific Registers Collision Detector Control 0 Register */
 #define LAN8650_REG_MMS4_CDCTL0 0x00040087
@@ -2329,6 +2380,22 @@ struct net_device *oa_tc6_get_netdev(struct oa_tc6 *tc6)
 	return tc6->netdev;
 }
 EXPORT_SYMBOL_GPL(oa_tc6_get_netdev);
+
+#ifndef FRAME_TIMESTAMP_ENABLE
+/* Run-time receive frame timestamps (TC6 v1.1 7.8.1), see struct oa_tc6.
+ * Called by the chip_init hook, before CONFIG0.SYNC, so no frame is in
+ * flight while the layout changes.  len 0 = none.
+ */
+void oa_tc6_set_frame_ts(struct oa_tc6 *tc6, u8 rx_ts_len,
+			 void (*rx_ts_cb)(void *ctx, struct sk_buff *skb, const u8 *ts),
+			 void *ctx)
+{
+	tc6->rx_ts_ctx = ctx;
+	tc6->rx_ts_cb = rx_ts_cb;
+	WRITE_ONCE(tc6->rx_ts_len, rx_ts_len);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_set_frame_ts);
+#endif /* FRAME_TIMESTAMP_ENABLE */
 
 void oa_tc6_set_fatal_cb(struct oa_tc6 *tc6, void (*cb)(void *ctx), void *ctx)
 {
