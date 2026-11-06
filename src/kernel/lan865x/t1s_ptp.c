@@ -32,16 +32,19 @@
  *
  * Receive (TC6 v1.1 7.8.1): with TS_CFG = FTSE | FTSS the MAC puts the
  * 8-byte timestamp (SFD on the MII receive side, clock of this MAC) in front
- * of every frame; oa_tc6 strips it (oa_tc6_set_frame_ts()).  The OASPI does
- * not report it in the footer (RTSA = 0, STDCAP.FTSC = 0): the driver knows
- * the layout from TS_CFG.
+ * of every frame; oa_tc6 strips it (oa_tc6_set_frame_ts()).  A MAC-PHY with
+ * STDCAP.FTSC = 1 (this chip since TSCEN) reports it in the footer of the start
+ * chunk (RTSA / RTSP, 7.8.1) and oa_tc6 takes the decision from there; with
+ * FTSC = 0 (an older bitstream) the footer says nothing and the driver knows the
+ * layout from TS_CFG.
  *
  * Transmit (TC6 v1.1 7.8.2): TSC in the header of the first chunk of the
  * frame, capture register = slot 1..3, completion polled in TS_STS.  The
- * OASPI of this chip does not pass the TSC to the MAC (STDCAP.FTSC = 0,
- * t1s repo top/rtl/chip/spi/t1s_chip_spi_top.v ties tx_tsc_i to 0, OASPI
- * decision OD-8): TX hardware timestamps are only offered when STDCAP.FTSC
- * reads 1, or for a test with t1s_ts_tx_force=1 (requests then time out).
+ * OASPI passes the TSC to the MAC only when STDCAP.FTSC = 1 (this chip since
+ * TSCEN, t1s repo top/rtl/chip/spi/t1s_chip_spi_top.v CoreFtsc = 1; an older
+ * bitstream ties tx_tsc_i to 0, OASPI decision OD-8): TX hardware timestamps are
+ * only offered when STDCAP.FTSC reads 1, or for a test with t1s_ts_tx_force=1
+ * (requests then time out).
  *
  * Reference plane (802.1AS-2020 8.4.3): the TX event is the PHY's SFD at the
  * PCS input (below the PLCA delay line), the RX event the MII SFD after the
@@ -653,10 +656,11 @@ static int t1s_ptp_thread(void* data) {
 
 int t1s_ptp_chip_init(struct oa_tc6* tc6, struct lan865x_priv* priv) {
     struct t1s_ptp* p = priv->t1s_ptp;
+    u32 cap = 0;
     int ret;
 
     if (!t1s_ts) {
-        oa_tc6_set_frame_ts(tc6, 0, NULL, NULL);
+        oa_tc6_set_frame_ts(tc6, 0, NULL, NULL, false);
         return oa_tc6_write_register(tc6, T1S_MMS1_TS_CFG, 0);
     }
     ret = oa_tc6_write_register(tc6, T1S_TS_TX_LAT, (u32)t1s_ts_tx_lat_ns & 0xFFFFFF);
@@ -670,10 +674,17 @@ int t1s_ptp_chip_init(struct oa_tc6* tc6, struct lan865x_priv* priv) {
     if (!ret) {
         ret = oa_tc6_write_register(tc6, T1S_MMS1_TS_CFG, T1S_TS_CFG_FTSE | T1S_TS_CFG_FTSS);
     }
+    if (!ret) {
+        ret = oa_tc6_read_register(tc6, T1S_TC6_STDCAP, &cap);
+    }
     if (ret) {
         return ret;
     }
-    oa_tc6_set_frame_ts(tc6, 8, t1s_ptp_rx_ts, priv);
+    /* FTSC = 1: the footer (RTSA / RTSP) says which frames carry a timestamp;
+     * FTSC = 0 (older bitstream): every frame does, the length is 8 from TS_CFG.
+     * Read again at every (re)init: a recovery follows a reset of the MAC-PHY.
+     */
+    oa_tc6_set_frame_ts(tc6, 8, t1s_ptp_rx_ts, priv, !!(cap & T1S_TC6_STDCAP_FTSC));
     return 0;
 }
 
