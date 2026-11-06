@@ -322,7 +322,7 @@ static void oa_tc6_prepare_ctrl_spi_buf(struct oa_tc6 *tc6, u32 address,
 		oa_tc6_update_ctrl_write_data(tc6, value, length);
 }
 
-static int oa_tc6_check_ctrl_write_reply(struct oa_tc6 *tc6, u8 size)
+static int oa_tc6_check_ctrl_write_reply(struct oa_tc6 *tc6, u16 size)
 {
 	u8 *tx_buf = tc6->spi_ctrl_tx_buf;
 	u8 *rx_buf = tc6->spi_ctrl_rx_buf;
@@ -338,7 +338,7 @@ static int oa_tc6_check_ctrl_write_reply(struct oa_tc6 *tc6, u8 size)
 	return 0;
 }
 
-static int oa_tc6_check_ctrl_read_reply(struct oa_tc6 *tc6, u8 size)
+static int oa_tc6_check_ctrl_read_reply(struct oa_tc6 *tc6, u16 size)
 {
 	u32 *rx_buf = tc6->spi_ctrl_rx_buf + OA_TC6_CTRL_IGNORED_SIZE;
 	u32 *tx_buf = tc6->spi_ctrl_tx_buf;
