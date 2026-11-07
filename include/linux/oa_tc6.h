@@ -78,6 +78,7 @@
 #define OA_TC6_PHY_C45_AUTO_NEG_MMS5 5   /* MMD 7 */
 #define OA_TC6_PHY_C45_POWER_UNIT_MMS6 6 /* MMD 13 */
 
+struct mii_bus;
 struct oa_tc6;
 
 /* MAC-PHY specific part of the driver (vendor code lives in the MAC driver):
@@ -108,6 +109,10 @@ int oa_tc6_write_register(struct oa_tc6* tc6, u32 address, u32 value);
 int oa_tc6_write_registers(struct oa_tc6* tc6, u32 address, u32 value[], u8 length);
 int oa_tc6_read_register(struct oa_tc6* tc6, u32 address, u32* value);
 int oa_tc6_read_registers(struct oa_tc6* tc6, u32 address, u32 value[], u8 length);
+int oa_tc6_write_register_mms(struct oa_tc6* tc6, u8 mms, u16 address, u32 value);
+int oa_tc6_read_register_mms(struct oa_tc6* tc6, u8 mms, u16 address, u32* value);
+int oa_tc6_mdiobus_read_c45(struct mii_bus* bus, int addr, int devnum, int regnum);
+int oa_tc6_mdiobus_write_c45(struct mii_bus* bus, int addr, int devnum, int regnum, u16 val);
 #ifdef FRAME_TIMESTAMP_ENABLE
 netdev_tx_t oa_tc6_start_xmit(struct oa_tc6* tc6, struct sk_buff* skb, u8 ts_capture_mode);
 #else  /* FRAME_TIMESTAMP_ENABLE */
