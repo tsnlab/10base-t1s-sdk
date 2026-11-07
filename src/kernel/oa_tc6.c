@@ -32,34 +32,7 @@
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
 
-/* OPEN Alliance TC6 registers */
-/* Standard Capabilities Register */
-#define OA_TC6_REG_STDCAP 0x0002
-#define STDCAP_DIRECT_PHY_REG_ACCESS BIT(8)
-
-/* Reset Control and Status Register */
-#define OA_TC6_REG_RESET 0x0003
-#define RESET_SWRESET BIT(0) /* Software Reset */
-
-/* Configuration Register #0 */
-#define OA_TC6_REG_CONFIG0 0x0004
-#define CONFIG0_SYNC BIT(15)
-#define CONFIG0_ZARFE_ENABLE BIT(12)
-
-/* Status Register #0 */
-#define OA_TC6_REG_STATUS0 0x0008
-#define STATUS0_RESETC BIT(6) /* Reset Complete */
-#define STATUS0_HEADER_ERROR BIT(5)
-#define STATUS0_LOSS_OF_FRAME_ERROR BIT(4)
-#define STATUS0_RX_BUFFER_OVERFLOW_ERROR BIT(3)
-#define STATUS0_TX_BUFFER_UNDERFLOW_ERROR BIT(2)
-#define STATUS0_TX_BUFFER_OVERFLOW_ERROR BIT(1)
-#define STATUS0_TX_PROTOCOL_ERROR BIT(0)
-#define STATUS0_TXFCSE BIT(11)
-#define STATUS0_CPDE BIT(12)
-
 /* Status Register #1 (LAN8650/1 vendor specific, DS60001734F 11.1.7) */
-#define OA_TC6_REG_STATUS1 0x0009
 #define STATUS1_RXNER BIT(0)
 #define STATUS1_TXNER BIT(1)
 #define STATUS1_FSMSTER BIT(17)
@@ -67,27 +40,6 @@
 #define STATUS1_UV18 BIT(19)
 #define STATUS1_BUSER BIT(20)
 
-/* Buffer Status Register */
-#define OA_TC6_REG_BUFFER_STATUS 0x000B
-#define BUFFER_STATUS_TX_CREDITS_AVAILABLE GENMASK(15, 8)
-#define BUFFER_STATUS_RX_CHUNKS_AVAILABLE GENMASK(7, 0)
-
-/* Interrupt Mask Register #0 */
-#define OA_TC6_REG_INT_MASK0 0x000C
-#define INT_MASK0_HEADER_ERR_MASK BIT(5)
-#define INT_MASK0_LOSS_OF_FRAME_ERR_MASK BIT(4)
-#define INT_MASK0_RX_BUFFER_OVERFLOW_ERR_MASK BIT(3)
-#define INT_MASK0_TX_BUFFER_UNDERFLOW_ERR_MASK BIT(2)
-#define INT_MASK0_TX_BUFFER_OVERFLOW_ERR_MASK BIT(1)
-#define INT_MASK0_TX_PROTOCOL_ERR_MASK BIT(0)
-#define INT_MASK0_ALL_INTERRUPTS (GENMASK(5, 0) | GENMASK(12, 7))
-
-/* Interrupt Mask Register #1 (DS60001734F 11.1.10) */
-#define OA_TC6_REG_INT_MASK1 0x000D
-
-/* PHY Clause 22 registers base address and mask */
-#define OA_TC6_PHY_STD_REG_ADDR_BASE 0xFF00
-#define OA_TC6_PHY_STD_REG_ADDR_MASK 0x1F
 
 /* Control command header */
 #define OA_TC6_CTRL_HEADER_DATA_NOT_CTRL	BIT(31)
@@ -122,14 +74,6 @@
 #define OA_TC6_DATA_FOOTER_RTSA BIT(7)
 #define OA_TC6_DATA_FOOTER_RTSP BIT(6)
 
-/* PHY – Clause 45 registers memory map selector (MMS) as per table 6 in the
- * OPEN Alliance specification.
- */
-#define OA_TC6_PHY_C45_PCS_MMS2 2 /* MMD 3 */
-#define OA_TC6_PHY_C45_PMA_PMD_MMS3 3 /* MMD 1 */
-#define OA_TC6_PHY_C45_VS_PLCA_MMS4 4 /* MMD 31 */
-#define OA_TC6_PHY_C45_AUTO_NEG_MMS5 5 /* MMD 7 */
-#define OA_TC6_PHY_C45_POWER_UNIT_MMS6 6 /* MMD 13 */
 
 #define OA_TC6_CTRL_HEADER_SIZE			4
 #define OA_TC6_CTRL_REG_VALUE_SIZE		4
@@ -497,7 +441,7 @@ static int oa_tc6_check_phy_reg_direct_access_capability(struct oa_tc6 *tc6)
 	if (ret)
 		return ret;
 
-	if (!(regval & STDCAP_DIRECT_PHY_REG_ACCESS))
+	if (!(regval & OA_TC6_STDCAP_DIRECT_PHY_REG_ACCESS))
 		return -ENODEV;
 
 	return 0;
@@ -696,7 +640,7 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 {
 	u32 st0;
 #if defined(CONFIG_RPI4)
-	u32 regval = RESET_SWRESET;
+	u32 regval = OA_TC6_RESET_SWRESET;
 	int ret;
 #elif defined(CONFIG_RPI5)
 	u32 regval;
@@ -704,7 +648,7 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 
 	oa_tc6_read_register(tc6, OA_TC6_REG_STATUS0, &regval);
 	pr_info("oa_tc6_sw_reset_macphy: STATUS0=0x%08x\n", regval);
-	regval = RESET_SWRESET;
+	regval = OA_TC6_RESET_SWRESET;
 #endif /* CONFIG_RPI4 or CONFIG_RPI5 */
 
 	/* TC6 v1.1 9.2.4.2 / 9.2.8.8: RESETC stays set until the host writes
@@ -714,8 +658,8 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 	 * takes longer to reset is configured while it is still resetting.
 	 */
 	if (!oa_tc6_read_register(tc6, OA_TC6_REG_STATUS0, &st0) &&
-	    (st0 & STATUS0_RESETC))
-		oa_tc6_write_register(tc6, OA_TC6_REG_STATUS0, STATUS0_RESETC);
+	    (st0 & OA_TC6_STATUS0_RESETC))
+		oa_tc6_write_register(tc6, OA_TC6_REG_STATUS0, OA_TC6_STATUS0_RESETC);
 
 	ret = oa_tc6_write_register(tc6, OA_TC6_REG_RESET, regval);
 	if (ret) {
@@ -726,7 +670,7 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 
 	/* Poll for soft reset complete for every 1ms until 1s timeout */
 	ret = readx_poll_timeout(oa_tc6_read_status0, tc6, regval,
-				 regval & STATUS0_RESETC,
+				 regval & OA_TC6_STATUS0_RESETC,
 				 STATUS0_RESETC_POLL_DELAY,
 				 STATUS0_RESETC_POLL_TIMEOUT);
 	if (ret) {
@@ -839,13 +783,13 @@ static int oa_tc6_unmask_macphy_error_interrupts(struct oa_tc6 *tc6)
 	 * is exactly what has to be visible while chasing TX stalls.
 	 */
 	if (err_irq)
-		regval &= ~(INT_MASK0_TX_PROTOCOL_ERR_MASK |
-			    INT_MASK0_TX_BUFFER_OVERFLOW_ERR_MASK |
-			    INT_MASK0_TX_BUFFER_UNDERFLOW_ERR_MASK |
-			    INT_MASK0_RX_BUFFER_OVERFLOW_ERR_MASK |
-			    INT_MASK0_HEADER_ERR_MASK);
+		regval &= ~(OA_TC6_INT_MASK0_TX_PROTOCOL_ERR_MASK |
+			    OA_TC6_INT_MASK0_TX_BUFFER_OVERFLOW_ERR_MASK |
+			    OA_TC6_INT_MASK0_TX_BUFFER_UNDERFLOW_ERR_MASK |
+			    OA_TC6_INT_MASK0_RX_BUFFER_OVERFLOW_ERR_MASK |
+			    OA_TC6_INT_MASK0_HEADER_ERR_MASK);
 	if (err_irq && lofe_irq)
-		regval &= ~INT_MASK0_LOSS_OF_FRAME_ERR_MASK;
+		regval &= ~OA_TC6_INT_MASK0_LOSS_OF_FRAME_ERR_MASK;
 
 	ret = oa_tc6_write_register(tc6, OA_TC6_REG_INT_MASK0, regval);
 	if (ret || !err_irq || !tc6->ops.imask1_unmask)
@@ -871,7 +815,7 @@ static int oa_tc6_enable_data_transfer(struct oa_tc6 *tc6)
 		return ret;
 
 	/* Enable configuration synchronization for data transfer */
-	value |= CONFIG0_SYNC;
+	value |= OA_TC6_CONFIG0_SYNC;
 
 	return oa_tc6_write_register(tc6, OA_TC6_REG_CONFIG0, value);
 }
@@ -1015,7 +959,7 @@ static void oa_tc6_fatal_irq_off(struct oa_tc6 *tc6)
  */
 static void oa_tc6_disable_traffic(struct oa_tc6 *tc6)
 {
-	u32 regval = INT_MASK0_ALL_INTERRUPTS;
+	u32 regval = OA_TC6_INT_MASK0_ALL_INTERRUPTS;
 	struct sk_buff *skb;
 
 	tc6->stats[OA_TC6_STAT_FATAL]++;
@@ -1047,12 +991,12 @@ static void oa_tc6_look_for_new_frame(struct oa_tc6 *tc6)
  * TTSCAA/B/C (and STATUS1 TTSCMx/TTSCOFx) bits that the PTP thread polls,
  * and RESETC.
  */
-#define STATUS0_HANDLED (STATUS0_TX_PROTOCOL_ERROR | \
-			 STATUS0_TX_BUFFER_OVERFLOW_ERROR | \
-			 STATUS0_TX_BUFFER_UNDERFLOW_ERROR | \
-			 STATUS0_RX_BUFFER_OVERFLOW_ERROR | \
-			 STATUS0_LOSS_OF_FRAME_ERROR | STATUS0_HEADER_ERROR | \
-			 STATUS0_RESETC | STATUS0_TXFCSE | STATUS0_CPDE)
+#define STATUS0_HANDLED (OA_TC6_STATUS0_TX_PROTOCOL_ERROR | \
+			 OA_TC6_STATUS0_TX_BUFFER_OVERFLOW_ERROR | \
+			 OA_TC6_STATUS0_TX_BUFFER_UNDERFLOW_ERROR | \
+			 OA_TC6_STATUS0_RX_BUFFER_OVERFLOW_ERROR | \
+			 OA_TC6_STATUS0_LOSS_OF_FRAME_ERROR | OA_TC6_STATUS0_HEADER_ERROR | \
+			 OA_TC6_STATUS0_RESETC | OA_TC6_STATUS0_TXFCSE | OA_TC6_STATUS0_CPDE)
 
 static void oa_tc6_count_status(struct oa_tc6 *tc6, u32 st0, u32 st1)
 {
@@ -1061,15 +1005,15 @@ static void oa_tc6_count_status(struct oa_tc6 *tc6, u32 st0, u32 st1)
 		u8 reg;
 		u8 id;
 	} map[] = {
-		{ STATUS0_TX_PROTOCOL_ERROR, 0, OA_TC6_STAT_TXPE },
-		{ STATUS0_TX_BUFFER_OVERFLOW_ERROR, 0, OA_TC6_STAT_TXBOE },
-		{ STATUS0_TX_BUFFER_UNDERFLOW_ERROR, 0, OA_TC6_STAT_TXBUE },
-		{ STATUS0_RX_BUFFER_OVERFLOW_ERROR, 0, OA_TC6_STAT_RXBOE },
-		{ STATUS0_LOSS_OF_FRAME_ERROR, 0, OA_TC6_STAT_LOFE },
-		{ STATUS0_HEADER_ERROR, 0, OA_TC6_STAT_HDRE },
-		{ STATUS0_RESETC, 0, OA_TC6_STAT_RESETC },
-		{ STATUS0_TXFCSE, 0, OA_TC6_STAT_TXFCSE },
-		{ STATUS0_CPDE, 0, OA_TC6_STAT_CPDE },
+		{ OA_TC6_STATUS0_TX_PROTOCOL_ERROR, 0, OA_TC6_STAT_TXPE },
+		{ OA_TC6_STATUS0_TX_BUFFER_OVERFLOW_ERROR, 0, OA_TC6_STAT_TXBOE },
+		{ OA_TC6_STATUS0_TX_BUFFER_UNDERFLOW_ERROR, 0, OA_TC6_STAT_TXBUE },
+		{ OA_TC6_STATUS0_RX_BUFFER_OVERFLOW_ERROR, 0, OA_TC6_STAT_RXBOE },
+		{ OA_TC6_STATUS0_LOSS_OF_FRAME_ERROR, 0, OA_TC6_STAT_LOFE },
+		{ OA_TC6_STATUS0_HEADER_ERROR, 0, OA_TC6_STAT_HDRE },
+		{ OA_TC6_STATUS0_RESETC, 0, OA_TC6_STAT_RESETC },
+		{ OA_TC6_STATUS0_TXFCSE, 0, OA_TC6_STAT_TXFCSE },
+		{ OA_TC6_STATUS0_CPDE, 0, OA_TC6_STAT_CPDE },
 		{ STATUS1_RXNER, 1, OA_TC6_STAT_RXNER },
 		{ STATUS1_TXNER, 1, OA_TC6_STAT_TXNER },
 		{ STATUS1_FSMSTER, 1, OA_TC6_STAT_FSMSTER },
@@ -1141,28 +1085,28 @@ static int oa_tc6_process_extended_status(struct oa_tc6 *tc6)
 	/* RESETC outside of oa_tc6_sw_reset_macphy(): the device was reset
 	 * behind our back (power glitch, RESET_N) and lost its configuration.
 	 */
-	if (value & STATUS0_RESETC) {
+	if (value & OA_TC6_STATUS0_RESETC) {
 		netdev_err(tc6->netdev, "Unexpected MAC-PHY reset (RESETC)\n");
 		return -ENODEV;
 	}
 
-	if (value & (STATUS0_TX_BUFFER_OVERFLOW_ERROR |
-		     STATUS0_TX_BUFFER_UNDERFLOW_ERROR | STATUS0_TXFCSE |
-		     STATUS0_CPDE))
+	if (value & (OA_TC6_STATUS0_TX_BUFFER_OVERFLOW_ERROR |
+		     OA_TC6_STATUS0_TX_BUFFER_UNDERFLOW_ERROR | OA_TC6_STATUS0_TXFCSE |
+		     OA_TC6_STATUS0_CPDE))
 		net_err_ratelimited("%s: STATUS0=0x%08x (TXBOE=%d TXBUE=%d TXFCSE=%d CPDE=%d)\n",
 				    tc6->netdev->name, st[0],
-				    !!(value & STATUS0_TX_BUFFER_OVERFLOW_ERROR),
-				    !!(value & STATUS0_TX_BUFFER_UNDERFLOW_ERROR),
-				    !!(value & STATUS0_TXFCSE),
-				    !!(value & STATUS0_CPDE));
+				    !!(value & OA_TC6_STATUS0_TX_BUFFER_OVERFLOW_ERROR),
+				    !!(value & OA_TC6_STATUS0_TX_BUFFER_UNDERFLOW_ERROR),
+				    !!(value & OA_TC6_STATUS0_TXFCSE),
+				    !!(value & OA_TC6_STATUS0_CPDE));
 
-	if (FIELD_GET(STATUS0_RX_BUFFER_OVERFLOW_ERROR, value)) {
+	if (FIELD_GET(OA_TC6_STATUS0_RX_BUFFER_OVERFLOW_ERROR, value)) {
 		oa_tc6_look_for_new_frame(tc6);
 		net_err_ratelimited("%s: Receive buffer overflow error\n",
 				    tc6->netdev->name);
 		return -EAGAIN;
 	}
-	if (FIELD_GET(STATUS0_TX_PROTOCOL_ERROR, value)) {
+	if (FIELD_GET(OA_TC6_STATUS0_TX_PROTOCOL_ERROR, value)) {
 		netdev_err(tc6->netdev, "Transmit protocol error\n");
 		return -ENODEV;
 	}
@@ -1170,10 +1114,10 @@ static int oa_tc6_process_extended_status(struct oa_tc6 *tc6)
 	 * non-recoverable errors. They will be handled in the next version.
 	 */
 	/* Not fatal here (upstream: -ENODEV), see lofe_irq. */
-	if (FIELD_GET(STATUS0_LOSS_OF_FRAME_ERROR, value))
+	if (FIELD_GET(OA_TC6_STATUS0_LOSS_OF_FRAME_ERROR, value))
 		net_warn_ratelimited("%s: loss of framing (LOFE) seen\n",
 				     tc6->netdev->name);
-	if (FIELD_GET(STATUS0_HEADER_ERROR, value)) {
+	if (FIELD_GET(OA_TC6_STATUS0_HEADER_ERROR, value)) {
 		netdev_err(tc6->netdev, "Header error\n");
 		return -ENODEV;
 	}
@@ -1937,9 +1881,10 @@ static int oa_tc6_update_buffer_status_from_register(struct oa_tc6 *tc6)
 	if (ret)
 		return ret;
 
-	tc6->tx_credits = FIELD_GET(BUFFER_STATUS_TX_CREDITS_AVAILABLE, value);
+	tc6->tx_credits = FIELD_GET(OA_TC6_BUFFER_STATUS_TX_CREDITS_AVAILABLE,
+				    value);
 	tc6->rx_chunks_available =
-		FIELD_GET(BUFFER_STATUS_RX_CHUNKS_AVAILABLE, value);
+		FIELD_GET(OA_TC6_BUFFER_STATUS_RX_CHUNKS_AVAILABLE, value);
 
 	return 0;
 }
@@ -1983,7 +1928,7 @@ int oa_tc6_zero_align_receive_frame_enable(struct oa_tc6 *tc6)
 		return ret;
 
 	/* Set Zero-Align Receive Frame Enable */
-	regval |= CONFIG0_ZARFE_ENABLE;
+	regval |= OA_TC6_CONFIG0_ZARFE_ENABLE;
 
 	return oa_tc6_write_register(tc6, OA_TC6_REG_CONFIG0, regval);
 }
@@ -2306,8 +2251,8 @@ int oa_tc6_read_buffer_status(struct oa_tc6 *tc6, u8 *txc, u8 *rba)
 	ret = oa_tc6_read_register(tc6, OA_TC6_REG_BUFFER_STATUS, &value);
 	if (ret)
 		return ret;
-	*txc = FIELD_GET(BUFFER_STATUS_TX_CREDITS_AVAILABLE, value);
-	*rba = FIELD_GET(BUFFER_STATUS_RX_CHUNKS_AVAILABLE, value);
+	*txc = FIELD_GET(OA_TC6_BUFFER_STATUS_TX_CREDITS_AVAILABLE, value);
+	*rba = FIELD_GET(OA_TC6_BUFFER_STATUS_RX_CHUNKS_AVAILABLE, value);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(oa_tc6_read_buffer_status);
