@@ -28,13 +28,9 @@
 #include <linux/interrupt.h>
 #include <linux/kthread.h>
 #include <linux/sched.h>
-#include <linux/phy.h>
-#include <linux/mdio.h>
 #include <linux/of.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/iopoll.h>
-
 
 /* OPEN Alliance TC6 registers */
 /* Standard Capabilities Register */
@@ -94,35 +90,35 @@
 #define OA_TC6_PHY_STD_REG_ADDR_MASK 0x1F
 
 /* Control command header */
-#define OA_TC6_CTRL_HEADER_DATA_NOT_CTRL BIT(31)
-#define OA_TC6_CTRL_HEADER_WRITE_NOT_READ BIT(29)
-#define OA_TC6_CTRL_HEADER_MEM_MAP_SELECTOR GENMASK(27, 24)
-#define OA_TC6_CTRL_HEADER_ADDR GENMASK(23, 8)
-#define OA_TC6_CTRL_HEADER_LENGTH GENMASK(7, 1)
-#define OA_TC6_CTRL_HEADER_PARITY BIT(0)
+#define OA_TC6_CTRL_HEADER_DATA_NOT_CTRL	BIT(31)
+#define OA_TC6_CTRL_HEADER_WRITE_NOT_READ	BIT(29)
+#define OA_TC6_CTRL_HEADER_MEM_MAP_SELECTOR	GENMASK(27, 24)
+#define OA_TC6_CTRL_HEADER_ADDR			GENMASK(23, 8)
+#define OA_TC6_CTRL_HEADER_LENGTH		GENMASK(7, 1)
+#define OA_TC6_CTRL_HEADER_PARITY		BIT(0)
 
 /* Data header */
-#define OA_TC6_DATA_HEADER_DATA_NOT_CTRL BIT(31)
-#define OA_TC6_DATA_HEADER_DATA_VALID BIT(21)
-#define OA_TC6_DATA_HEADER_START_VALID BIT(20)
-#define OA_TC6_DATA_HEADER_START_WORD_OFFSET GENMASK(19, 16)
-#define OA_TC6_DATA_HEADER_END_VALID BIT(14)
-#define OA_TC6_DATA_HEADER_END_BYTE_OFFSET GENMASK(13, 8)
+#define OA_TC6_DATA_HEADER_DATA_NOT_CTRL	BIT(31)
+#define OA_TC6_DATA_HEADER_DATA_VALID		BIT(21)
+#define OA_TC6_DATA_HEADER_START_VALID		BIT(20)
+#define OA_TC6_DATA_HEADER_START_WORD_OFFSET	GENMASK(19, 16)
+#define OA_TC6_DATA_HEADER_END_VALID		BIT(14)
+#define OA_TC6_DATA_HEADER_END_BYTE_OFFSET	GENMASK(13, 8)
 #define OA_TC6_DATA_HEADER_TIMESTAMP_CAPTURE GENMASK(7, 6)
-#define OA_TC6_DATA_HEADER_PARITY BIT(0)
+#define OA_TC6_DATA_HEADER_PARITY		BIT(0)
 
 /* Data footer */
-#define OA_TC6_DATA_FOOTER_EXTENDED_STS BIT(31)
-#define OA_TC6_DATA_FOOTER_RXD_HEADER_BAD BIT(30)
-#define OA_TC6_DATA_FOOTER_CONFIG_SYNC BIT(29)
-#define OA_TC6_DATA_FOOTER_RX_CHUNKS GENMASK(28, 24)
-#define OA_TC6_DATA_FOOTER_DATA_VALID BIT(21)
-#define OA_TC6_DATA_FOOTER_START_VALID BIT(20)
-#define OA_TC6_DATA_FOOTER_START_WORD_OFFSET GENMASK(19, 16)
+#define OA_TC6_DATA_FOOTER_EXTENDED_STS		BIT(31)
+#define OA_TC6_DATA_FOOTER_RXD_HEADER_BAD	BIT(30)
+#define OA_TC6_DATA_FOOTER_CONFIG_SYNC		BIT(29)
+#define OA_TC6_DATA_FOOTER_RX_CHUNKS		GENMASK(28, 24)
+#define OA_TC6_DATA_FOOTER_DATA_VALID		BIT(21)
+#define OA_TC6_DATA_FOOTER_START_VALID		BIT(20)
+#define OA_TC6_DATA_FOOTER_START_WORD_OFFSET	GENMASK(19, 16)
 #define OA_TC6_DATA_FOOTER_FRAME_DROP BIT(15)
-#define OA_TC6_DATA_FOOTER_END_VALID BIT(14)
-#define OA_TC6_DATA_FOOTER_END_BYTE_OFFSET GENMASK(13, 8)
-#define OA_TC6_DATA_FOOTER_TX_CREDITS GENMASK(5, 1)
+#define OA_TC6_DATA_FOOTER_END_VALID		BIT(14)
+#define OA_TC6_DATA_FOOTER_END_BYTE_OFFSET	GENMASK(13, 8)
+#define OA_TC6_DATA_FOOTER_TX_CREDITS		GENMASK(5, 1)
 #define OA_TC6_DATA_FOOTER_RTSA BIT(7)
 #define OA_TC6_DATA_FOOTER_RTSP BIT(6)
 
@@ -135,21 +131,21 @@
 #define OA_TC6_PHY_C45_AUTO_NEG_MMS5 5 /* MMD 7 */
 #define OA_TC6_PHY_C45_POWER_UNIT_MMS6 6 /* MMD 13 */
 
-#define OA_TC6_CTRL_HEADER_SIZE 4
-#define OA_TC6_CTRL_REG_VALUE_SIZE 4
-#define OA_TC6_CTRL_IGNORED_SIZE 4
-#define OA_TC6_CTRL_MAX_REGISTERS 128
+#define OA_TC6_CTRL_HEADER_SIZE			4
+#define OA_TC6_CTRL_REG_VALUE_SIZE		4
+#define OA_TC6_CTRL_IGNORED_SIZE		4
+#define OA_TC6_CTRL_MAX_REGISTERS		128
 #define OA_TC6_CTRL_SPI_BUF_SIZE                                    \
 	(OA_TC6_CTRL_HEADER_SIZE +                                  \
 	 (OA_TC6_CTRL_MAX_REGISTERS * OA_TC6_CTRL_REG_VALUE_SIZE) + \
 	 OA_TC6_CTRL_IGNORED_SIZE)
-#define OA_TC6_CHUNK_PAYLOAD_SIZE 64
-#define OA_TC6_DATA_HEADER_SIZE 4
+#define OA_TC6_CHUNK_PAYLOAD_SIZE		64
+#define OA_TC6_DATA_HEADER_SIZE			4
 #define OA_TC6_CHUNK_SIZE (OA_TC6_DATA_HEADER_SIZE + OA_TC6_CHUNK_PAYLOAD_SIZE)
-#define OA_TC6_MAX_TX_CHUNKS 48
+#define OA_TC6_MAX_TX_CHUNKS			48
 #define OA_TC6_SPI_DATA_BUF_SIZE (OA_TC6_MAX_TX_CHUNKS * OA_TC6_CHUNK_SIZE)
-#define STATUS0_RESETC_POLL_DELAY 1000
-#define STATUS0_RESETC_POLL_TIMEOUT 1000000
+#define STATUS0_RESETC_POLL_DELAY		1000
+#define STATUS0_RESETC_POLL_TIMEOUT		1000000
 
 #ifdef FRAME_TIMESTAMP_ENABLE
 #define OA_TC6_TIMESTAMP_SIZE 8
@@ -518,10 +514,8 @@ static int oa_tc6_mdiobus_read(struct mii_bus *bus, int addr, int regnum)
 	u32 regval;
 	int ret;
 
-	ret = oa_tc6_read_register(tc6,
-				   OA_TC6_PHY_STD_REG_ADDR_BASE |
-					   (regnum &
-					    OA_TC6_PHY_STD_REG_ADDR_MASK),
+	ret = oa_tc6_read_register(tc6, OA_TC6_PHY_STD_REG_ADDR_BASE |
+				   (regnum & OA_TC6_PHY_STD_REG_ADDR_MASK),
 				   &regval);
 	if (ret)
 		return ret;
@@ -534,10 +528,8 @@ static int oa_tc6_mdiobus_write(struct mii_bus *bus, int addr, int regnum,
 {
 	struct oa_tc6 *tc6 = bus->priv;
 
-	return oa_tc6_write_register(tc6,
-				     OA_TC6_PHY_STD_REG_ADDR_BASE |
-					     (regnum &
-					      OA_TC6_PHY_STD_REG_ADDR_MASK),
+	return oa_tc6_write_register(tc6, OA_TC6_PHY_STD_REG_ADDR_BASE |
+				     (regnum & OA_TC6_PHY_STD_REG_ADDR_MASK),
 				     val);
 }
 
@@ -753,27 +745,6 @@ static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
 
 	return ret;
 }
-
-// static int oa_tc6_sw_reset_macphy(struct oa_tc6 *tc6)
-// {
-// 	u32 regval = RESET_SWRESET;
-// 	int ret;
-
-// 	ret = oa_tc6_write_register(tc6, OA_TC6_REG_RESET, regval);
-// 	if (ret)
-// 		return ret;
-
-// 	/* Poll for soft reset complete for every 1ms until 1s timeout */
-// 	ret = readx_poll_timeout(oa_tc6_read_status0, tc6, regval,
-// 				 regval & STATUS0_RESETC,
-// 				 STATUS0_RESETC_POLL_DELAY,
-// 				 STATUS0_RESETC_POLL_TIMEOUT);
-// 	if (ret)
-// 		return -ENODEV;
-
-// 	/* Clear the reset complete status */
-// 	return oa_tc6_write_register(tc6, OA_TC6_REG_STATUS0, regval);
-// }
 
 /* Minimum CSn-high time between SPI transactions (TC6 v1.1 resync_timer,
  * 8.4: implementation defined).  200 ns covers the TSN Lab T1S MAC-PHY
@@ -1291,8 +1262,8 @@ static int oa_tc6_update_rx_skb(struct oa_tc6 *tc6, u8 *payload, u8 length)
 static int oa_tc6_allocate_rx_skb(struct oa_tc6 *tc6)
 {
 	oa_tc6_cleanup_ongoing_rx_skb(tc6);
-	tc6->rx_skb = netdev_alloc_skb_ip_align(
-		tc6->netdev, tc6->netdev->mtu + ETH_HLEN + ETH_FCS_LEN);
+	tc6->rx_skb = netdev_alloc_skb_ip_align(tc6->netdev, tc6->netdev->mtu +
+						ETH_HLEN + ETH_FCS_LEN);
 	if (!tc6->rx_skb) {
 		tc6->netdev->stats.rx_dropped++;
 		return -ENOMEM;
@@ -1513,7 +1484,8 @@ static int oa_tc6_prcs_rx_frame_end(struct oa_tc6 *tc6, u8 *payload, u16 size)
 static int oa_tc6_prcs_ongoing_rx_frame(struct oa_tc6 *tc6, u8 *payload,
 					u32 footer)
 {
-	return oa_tc6_update_rx_skb(tc6, payload, OA_TC6_CHUNK_PAYLOAD_SIZE);
+	return oa_tc6_update_rx_skb(tc6, payload,
+				    OA_TC6_CHUNK_PAYLOAD_SIZE);
 }
 
 static int oa_tc6_prcs_rx_chunk_payload(struct oa_tc6 *tc6, u8 *data,
