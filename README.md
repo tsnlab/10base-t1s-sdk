@@ -153,6 +153,16 @@ $ sudo i2cget -y 1 0x43 0x0f
 ```
 -->
 
+### SPI clock
+
+| MAC-PHY | SPI clock |
+|---|---|
+| LAN8650/1 | 25 MHz (set by the driver) |
+| t1s-oaspi | **default 12.5 MHz, maximum 25 MHz** — `spi-max-frequency` in the device tree node, or the module parameter `t1s_spi_hz=<Hz>` (it wins over the device tree) |
+
+12.5 MHz is enough for the 10 Mb/s line: with 64-byte chunks the SPI carries 12.5 MHz x 64 / 68 = 11.8 Mb/s of frame data in each
+direction (full duplex SPI), more than the 10 Mb/s of the line. 25 MHz gives more margin for control traffic and timestamps.
+
 # 5. Clean
 
 ```bash
