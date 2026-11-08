@@ -1823,6 +1823,11 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 	tc6->xfer_hdrb_chunk = -1;
 	tc6->xfer_bad_chunk = -1;
 	tc6->xfer_ovf_chunk = -1;
+	/* also here, not only in oa_tc6_tx_resolve(): a fatal return (no
+	 * resolve) must not leave it set for the transfer after the recovery,
+	 * where it would let a TXPE alone pass as non-fatal
+	 */
+	tc6->tx_ovf_seen = false;
 
 	/* All the rx chunks in the receive SPI data buffer are examined here */
 	for (int i = 0; i < no_of_rx_chunks; i++) {
