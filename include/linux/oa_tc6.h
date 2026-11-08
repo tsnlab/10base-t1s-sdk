@@ -96,6 +96,7 @@ struct oa_tc6_chip_ops {
     u32 status1_handled;
     u32 status1_fatal;
     u32 status1_warn;
+    bool lofe_unmask; /* unmask STATUS0.LOFE by default (module parameter lofe_irq -1) */
 };
 
 /* no MAC-PHY specific part */
@@ -155,6 +156,8 @@ enum oa_tc6_stat_id {
     OA_TC6_STAT_FOOTER_PARITY, /* receive footer with a parity error (MISO) */
     OA_TC6_STAT_RX_TS_PARITY,  /* receive timestamp (RTSP) parity error */
     OA_TC6_STAT_RX_TS_SPLIT,   /* frame dropped: receive timestamp split over two chunks */
+    OA_TC6_STAT_TX_RETX,       /* TX frame sent again (MAC-PHY dropped it: HDRB / HDRE / LOFE) */
+    OA_TC6_STAT_TX_RETX_DROP,  /* TX frame dropped after OA_TC6_TX_RETRY_MAX tries */
     OA_TC6_STAT_NUM,
 };
 

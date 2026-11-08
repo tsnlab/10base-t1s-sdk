@@ -98,6 +98,22 @@
 #define OA_TC6_UNNECESSARY_FOOTER_SIZE 4
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
+/* A TX frame whose last chunk (EV = 1) went out in the SPI data transfer being
+ * run, or one that the MAC-PHY dropped and that is sent again (TC6 v1.1 7.5.1:
+ * the host "may retransmit the frame that was dropped as a result of the
+ * error", 7.5.2: "should ... retransmit the frame").
+ */
+struct oa_tc6_tx_frame {
+	struct sk_buff *skb;
+	u8 tsc;      /* TSC / ts_capture_mode, sent with SV = 1 (7.8.2) */
+	u8 tries;    /* times the frame was sent again */
+	u8 ev_chunk; /* data chunk of the transfer that had its end */
+};
+
+/* A frame the MAC-PHY dropped is sent again at most this many times. */
+#define OA_TC6_TX_RETRY_MAX	3
+#define OA_TC6_RETX_MAX		(2 * OA_TC6_MAX_TX_CHUNKS + 1)
+
 /* Internal structure for MAC-PHY drivers */
 struct oa_tc6 {
 	struct net_device *netdev;
@@ -116,12 +132,29 @@ struct oa_tc6 {
 	u16 tx_skb_offset;
 	u16 spi_data_tx_buf_offset;
 	u16 tx_credits;
-	/* Frames whose last chunk is in the SPI transfer being run. They are counted
-	 * in the netdev stats only after that transfer is accepted
-	 * (OA TC6 v1.1 7.5.1).
+	/* TX frames kept until the MAC-PHY is known to have taken them
+	 * (OA TC6 v1.1 7.5.1 / 7.5.2), see oa_tc6_tx_resolve():
+	 * xfer_tx   - frames that ended in the SPI data transfer being run;
+	 * held_tx   - frames of an earlier transfer whose footers had a parity
+	 *             error (CSn glitch or MISO bit error): the next footer tells
+	 *             (STATUS0.LOFE) whether the MAC-PHY dropped them;
+	 *             held_ongoing: the same for the frame in progress;
+	 * retx      - frames to send again, before any new one (ring).
+	 * Counted in the netdev stats only once taken.
 	 */
-	u16 xfer_tx_packets;
-	u32 xfer_tx_bytes;
+	struct oa_tc6_tx_frame xfer_tx[OA_TC6_MAX_TX_CHUNKS];
+	u8 xfer_tx_n;
+	struct oa_tc6_tx_frame held_tx[OA_TC6_MAX_TX_CHUNKS];
+	u8 held_tx_n;
+	bool held_ongoing;
+	struct oa_tc6_tx_frame retx[OA_TC6_RETX_MAX];
+	u8 retx_head;
+	u8 retx_n;
+	u8 ongoing_frame_tsc;   /* TSC of the ongoing frame, for a restart */
+	u8 ongoing_frame_tries;
+	s8 xfer_hdrb_chunk;     /* first chunk with footer HDRB, -1: none */
+	s8 xfer_bad_chunk;      /* first chunk with a footer parity error, -1: none */
+	bool tx_dropped_by_dev; /* STATUS0 LOFE / HDRE: frame in progress dropped */
 	u8 rx_chunks_available;
 	bool wait_until_start_valid;
 	bool int_flag;
@@ -788,6 +821,8 @@ const char oa_tc6_stat_names[OA_TC6_STAT_NUM][32] = {
 	[OA_TC6_STAT_FOOTER_PARITY] = "oa_footer_parity_errors",
 	[OA_TC6_STAT_RX_TS_PARITY] = "oa_rx_timestamp_parity_errors",
 	[OA_TC6_STAT_RX_TS_SPLIT] = "oa_rx_timestamp_split_drops",
+	[OA_TC6_STAT_TX_RETX] = "oa_tx_retransmits",
+	[OA_TC6_STAT_TX_RETX_DROP] = "oa_tx_retransmit_drops",
 };
 EXPORT_SYMBOL_GPL(oa_tc6_stat_names);
 
@@ -805,12 +840,17 @@ EXPORT_SYMBOL_GPL(oa_tc6_get_stats);
  * presumably why the SDK put the unmask under '#if 0'.  TODO(spec): check the
  * CS_N timing against DS60001734F (SPI timing) with a logic analyser.
  */
+/* -1 (default): as the MAC-PHY's chip ops say (oa_tc6_chip_ops.lofe_unmask:
+ * t1s-oaspi 1, LAN8650/1 0); 0 / 1 force it for every MAC-PHY.  An unmasked
+ * LOFE is what lets a frame cut by a CSn glitch be sent again (TC6 v1.1
+ * 7.5.2).
+ */
 #ifndef LAN865X_DEF_LOFE_IRQ
-#define LAN865X_DEF_LOFE_IRQ false
+#define LAN865X_DEF_LOFE_IRQ -1
 #endif
-static bool lofe_irq = LAN865X_DEF_LOFE_IRQ;
-module_param(lofe_irq, bool, 0444);
-MODULE_PARM_DESC(lofe_irq, "Also unmask LOFE (loss of framing), default 0");
+static int lofe_irq = LAN865X_DEF_LOFE_IRQ;
+module_param(lofe_irq, int, 0444);
+MODULE_PARM_DESC(lofe_irq, "Also unmask LOFE (loss of framing): -1 MAC-PHY default (t1s-oaspi 1, LAN8650/1 0), 0 / 1");
 
 static int oa_tc6_unmask_macphy_error_interrupts(struct oa_tc6 *tc6)
 {
@@ -834,7 +874,7 @@ static int oa_tc6_unmask_macphy_error_interrupts(struct oa_tc6 *tc6)
 			    OA_TC6_INT_MASK0_TX_BUFFER_UNDERFLOW_ERR_MASK |
 			    OA_TC6_INT_MASK0_RX_BUFFER_OVERFLOW_ERR_MASK |
 			    OA_TC6_INT_MASK0_HEADER_ERR_MASK);
-	if (err_irq && lofe_irq)
+	if (err_irq && (lofe_irq < 0 ? tc6->ops.lofe_unmask : lofe_irq))
 		regval &= ~OA_TC6_INT_MASK0_LOSS_OF_FRAME_ERR_MASK;
 
 	ret = oa_tc6_write_register(tc6, OA_TC6_REG_INT_MASK0, regval);
@@ -951,8 +991,161 @@ static bool filter_rx_timestamp(struct oa_tc6 *tc6, u8 *data)
 }
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
+/* Taken by the MAC-PHY: count it as sent. */
+static void oa_tc6_tx_frame_done(struct oa_tc6 *tc6, struct oa_tc6_tx_frame *f)
+{
+	tc6->netdev->stats.tx_packets++;
+	tc6->netdev->stats.tx_bytes += f->skb->len;
+	kfree_skb(f->skb);
+	f->skb = NULL;
+}
+
+/* Put frames back at the head of the retransmit ring, in this order (they
+ * are older than any frame still in the ring).  A frame sent again
+ * OA_TC6_TX_RETRY_MAX times is dropped.
+ */
+static void oa_tc6_tx_requeue(struct oa_tc6 *tc6, struct oa_tc6_tx_frame *f,
+			      int n)
+{
+	for (int i = n - 1; i >= 0; i--) {
+		if (!f[i].skb)
+			continue;
+		if (f[i].tries >= OA_TC6_TX_RETRY_MAX ||
+		    tc6->retx_n >= OA_TC6_RETX_MAX) {
+			tc6->stats[OA_TC6_STAT_TX_RETX_DROP]++;
+			oa_tc6_drop_tx_skb(tc6, f[i].skb);
+			f[i].skb = NULL;
+			continue;
+		}
+		f[i].tries++;
+		tc6->stats[OA_TC6_STAT_TX_RETX]++;
+		tc6->retx_head = (tc6->retx_head + OA_TC6_RETX_MAX - 1) %
+				 OA_TC6_RETX_MAX;
+		tc6->retx[tc6->retx_head] = f[i];
+		tc6->retx_n++;
+		f[i].skb = NULL;
+	}
+}
+
+/* The MAC-PHY dropped the frame in progress: send it again from its start. */
+static void oa_tc6_tx_restart_ongoing(struct oa_tc6 *tc6)
+{
+	struct oa_tc6_tx_frame f = {
+		.skb = tc6->ongoing_tx_skb,
+		.tsc = tc6->ongoing_frame_tsc,
+		.tries = tc6->ongoing_frame_tries,
+	};
+
+	if (!f.skb)
+		return;
+	tc6->ongoing_tx_skb = NULL;
+	tc6->tx_skb_offset = 0;
+#ifdef FRAME_TIMESTAMP_ENABLE
+	tc6->ongoing_tx_ts_capture_mode = 0;
+#else /* FRAME_TIMESTAMP_ENABLE */
+	tc6->ongoing_tx_tsc = 0;
+#endif /* FRAME_TIMESTAMP_ENABLE */
+	oa_tc6_tx_requeue(tc6, &f, 1);
+}
+
+static void oa_tc6_tx_drop_frames(struct oa_tc6 *tc6, struct oa_tc6_tx_frame *f,
+				  int n)
+{
+	for (int i = 0; i < n; i++) {
+		if (f[i].skb)
+			oa_tc6_drop_tx_skb(tc6, f[i].skb);
+		f[i].skb = NULL;
+	}
+}
+
+static void oa_tc6_tx_drop_kept(struct oa_tc6 *tc6)
+{
+	oa_tc6_tx_drop_frames(tc6, tc6->xfer_tx, tc6->xfer_tx_n);
+	tc6->xfer_tx_n = 0;
+	oa_tc6_tx_drop_frames(tc6, tc6->held_tx, tc6->held_tx_n);
+	tc6->held_tx_n = 0;
+	tc6->held_ongoing = false;
+	while (tc6->retx_n) {
+		oa_tc6_drop_tx_skb(tc6, tc6->retx[tc6->retx_head].skb);
+		tc6->retx[tc6->retx_head].skb = NULL;
+		tc6->retx_head = (tc6->retx_head + 1) % OA_TC6_RETX_MAX;
+		tc6->retx_n--;
+	}
+	tc6->tx_dropped_by_dev = false;
+}
+
+/* After the footers of a data transfer (and the STATUS0 they pointed to)
+ * were processed: decide for every frame kept whether the MAC-PHY took it.
+ *  - footer HDRB from chunk k on (7.5.1): the MAC-PHY ignored MOSI from that
+ *    chunk to the end of the transfer and dropped the frame it was receiving;
+ *    frames that ended before chunk k are taken ("completed frames ... prior
+ *    to the error will be processed"), the others and the frame in progress
+ *    are sent again from their start (SV = 1);
+ *  - footer parity error from chunk k on: MISO bit error or a CSn glitch
+ *    (7.5.2, the MAC-PHY then ignored MOSI up to CSn high); the frames that
+ *    ended from chunk k on and the frame in progress are held, the next
+ *    transfer carries no frame data (TXC 0) and its footer shows STATUS0.LOFE
+ *    (when unmasked): sent again if set, taken if not;
+ *  - STATUS0.LOFE / HDRE without either: the MAC-PHY dropped the frame in
+ *    progress (7.5.1 / 7.5.2): send it again from its start.
+ */
+static void oa_tc6_tx_resolve(struct oa_tc6 *tc6)
+{
+	int k, n = tc6->xfer_tx_n;
+	bool drop = tc6->tx_dropped_by_dev;
+
+	tc6->tx_dropped_by_dev = false;
+	tc6->xfer_tx_n = 0;
+
+	if (tc6->held_tx_n || tc6->held_ongoing) {
+		if (tc6->xfer_bad_chunk >= 0 && tc6->xfer_hdrb_chunk < 0 && !drop) {
+			/* still no clean footer: keep holding */
+			for (int i = 0; i < n && tc6->held_tx_n < OA_TC6_MAX_TX_CHUNKS; i++)
+				tc6->held_tx[tc6->held_tx_n++] = tc6->xfer_tx[i];
+			return;
+		}
+		if (drop || tc6->xfer_hdrb_chunk >= 0) {
+			oa_tc6_tx_requeue(tc6, tc6->held_tx, tc6->held_tx_n);
+			if (tc6->held_ongoing)
+				drop = true;
+		} else {
+			for (int i = 0; i < tc6->held_tx_n; i++)
+				oa_tc6_tx_frame_done(tc6, &tc6->held_tx[i]);
+		}
+		tc6->held_tx_n = 0;
+		tc6->held_ongoing = false;
+	}
+
+	k = tc6->xfer_hdrb_chunk >= 0 ? tc6->xfer_hdrb_chunk : tc6->xfer_bad_chunk;
+	if (k < 0) {
+		for (int i = 0; i < n; i++)
+			oa_tc6_tx_frame_done(tc6, &tc6->xfer_tx[i]);
+		if (drop)
+			oa_tc6_tx_restart_ongoing(tc6);
+		return;
+	}
+
+	for (int i = 0; i < n; i++) {
+		if (tc6->xfer_tx[i].ev_chunk < k)
+			oa_tc6_tx_frame_done(tc6, &tc6->xfer_tx[i]);
+	}
+	if (tc6->xfer_hdrb_chunk >= 0) {
+		oa_tc6_tx_requeue(tc6, tc6->xfer_tx, n);
+		oa_tc6_tx_restart_ongoing(tc6);
+		return;
+	}
+	for (int i = 0; i < n; i++) {
+		if (tc6->xfer_tx[i].skb)
+			tc6->held_tx[tc6->held_tx_n++] = tc6->xfer_tx[i];
+	}
+	if (drop)
+		oa_tc6_tx_restart_ongoing(tc6);
+	tc6->held_ongoing = !!tc6->ongoing_tx_skb;
+}
+
 static void oa_tc6_cleanup_ongoing_tx_skb(struct oa_tc6 *tc6)
 {
+	oa_tc6_tx_drop_kept(tc6);
 	oa_tc6_drop_tx_skb(tc6, tc6->ongoing_tx_skb);
 	tc6->ongoing_tx_skb = NULL;
 #ifdef FRAME_TIMESTAMP_ENABLE
@@ -1156,22 +1349,25 @@ static int oa_tc6_process_extended_status(struct oa_tc6 *tc6)
 		netdev_err(tc6->netdev, "Transmit protocol error\n");
 		return -ENODEV;
 	}
-	/* TODO: Currently loss of frame and header errors are treated as
-	 * non-recoverable errors. They will be handled in the next version.
+	/* Loss of framing (7.5.2) and header parity error (7.5.1) are not
+	 * fatal (upstream v7.3: -ENODEV, a MAC-PHY reset): the MAC-PHY dropped
+	 * the TX frame in progress, which is sent again (oa_tc6_tx_resolve()).
 	 */
-	/* Not fatal here (upstream: -ENODEV), see lofe_irq. */
-	if (FIELD_GET(OA_TC6_STATUS0_LOSS_OF_FRAME_ERROR, value))
+	if (FIELD_GET(OA_TC6_STATUS0_LOSS_OF_FRAME_ERROR, value)) {
 		net_warn_ratelimited("%s: loss of framing (LOFE) seen\n",
 				     tc6->netdev->name);
+		tc6->tx_dropped_by_dev = true;
+	}
 	if (FIELD_GET(OA_TC6_STATUS0_HEADER_ERROR, value)) {
-		netdev_err(tc6->netdev, "Header error\n");
-		return -ENODEV;
+		net_warn_ratelimited("%s: Header error\n", tc6->netdev->name);
+		tc6->tx_dropped_by_dev = true;
 	}
 
 	return 0;
 }
 
-static int oa_tc6_process_rx_chunk_footer(struct oa_tc6 *tc6, u32 footer)
+static int oa_tc6_process_rx_chunk_footer(struct oa_tc6 *tc6, u32 footer,
+					  int chunk)
 {
 	int ret = 0;
 
@@ -1193,14 +1389,20 @@ static int oa_tc6_process_rx_chunk_footer(struct oa_tc6 *tc6, u32 footer)
 			return ret;
 	}
 
-	/* TODO: Currently received header bad and configuration unsync errors
-	 * are treated as non-recoverable errors. They will be handled in the
-	 * next version.
+	/* Header bad (7.5.1): the MAC-PHY sends the constant 0xC0000001 (SYNC
+	 * 0) from the chunk whose header had a parity error to the end of the
+	 * transaction and ignored MOSI meanwhile.  Not fatal (upstream v7.3:
+	 * -ENODEV): the dropped TX frames are sent again (oa_tc6_tx_resolve()),
+	 * a fresh footer (TXC / RCA) is asked for with an empty chunk.
 	 */
 	if (FIELD_GET(OA_TC6_DATA_FOOTER_RXD_HEADER_BAD, footer)) {
 		tc6->stats[OA_TC6_STAT_FOOTER_HDRB]++;
-		netdev_err(tc6->netdev, "Rxd header bad error\n");
-		return -ENODEV;
+		net_warn_ratelimited("%s: Rxd header bad error\n",
+				     tc6->netdev->name);
+		if (tc6->xfer_hdrb_chunk < 0)
+			tc6->xfer_hdrb_chunk = chunk;
+		tc6->int_flag = true;
+		return -EAGAIN;
 	}
 
 	if (!FIELD_GET(OA_TC6_DATA_FOOTER_CONFIG_SYNC, footer)) {
@@ -1587,6 +1789,9 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 	int ret = 0;
 	u32 footer;
 
+	tc6->xfer_hdrb_chunk = -1;
+	tc6->xfer_bad_chunk = -1;
+
 	/* All the rx chunks in the receive SPI data buffer are examined here */
 	for (int i = 0; i < no_of_rx_chunks; i++) {
 		/* Last 4 bytes in each received chunk consist footer info */
@@ -1602,6 +1807,8 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 		 */
 		if (oa_tc6_get_parity(footer)) {
 			tc6->stats[OA_TC6_STAT_FOOTER_PARITY]++;
+			if (tc6->xfer_bad_chunk < 0)
+				tc6->xfer_bad_chunk = i;
 			if (++tc6->footer_par_err_run >=
 			    OA_TC6_FOOTER_PARITY_ERR_MAX) {
 				netdev_err(tc6->netdev,
@@ -1619,12 +1826,15 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 		}
 		tc6->footer_par_err_run = 0;
 
-		ret = oa_tc6_process_rx_chunk_footer(tc6, footer);
+		ret = oa_tc6_process_rx_chunk_footer(tc6, footer, i);
 		if (ret) {
 			if (ret != -EAGAIN)
 				return ret;
 			retry = true;
 		}
+		/* The rest of the transaction is the same HDRB constant */
+		if (tc6->xfer_hdrb_chunk >= 0)
+			break;
 
 		/* If there is a data valid chunks then process it for the
 		 * information needed to determine the validity and the location
@@ -1729,12 +1939,16 @@ static void oa_tc6_add_tx_skb_to_spi_buf(struct oa_tc6 *tc6)
 	 * ethernet frame.
 	 */
 	if (tc6->ongoing_tx_skb->len == tc6->tx_skb_offset) {
+		struct oa_tc6_tx_frame *f = &tc6->xfer_tx[tc6->xfer_tx_n++];
+
 		end_valid = OA_TC6_DATA_END_VALID;
 		end_byte_offset = length_to_copy - 1;
 		tc6->tx_skb_offset = 0;
-		tc6->xfer_tx_bytes += tc6->ongoing_tx_skb->len;
-		tc6->xfer_tx_packets++;
-		kfree_skb(tc6->ongoing_tx_skb);
+		/* kept until the footers show the MAC-PHY took it */
+		f->skb = tc6->ongoing_tx_skb;
+		f->tsc = tc6->ongoing_frame_tsc;
+		f->tries = tc6->ongoing_frame_tries;
+		f->ev_chunk = tc6->spi_data_tx_buf_offset / OA_TC6_CHUNK_SIZE;
 		tc6->ongoing_tx_skb = NULL;
 	}
 
@@ -1752,6 +1966,22 @@ static u16 oa_tc6_prepare_spi_tx_buf_for_tx_skbs(struct oa_tc6 *tc6)
 	 */
 	for (used_tx_credits = 0; used_tx_credits < tc6->tx_credits;
 	     used_tx_credits++) {
+		if (!tc6->ongoing_tx_skb && tc6->retx_n) {
+			/* a frame the MAC-PHY dropped goes first */
+			struct oa_tc6_tx_frame *f = &tc6->retx[tc6->retx_head];
+
+			tc6->ongoing_tx_skb = f->skb;
+			tc6->ongoing_frame_tsc = f->tsc;
+			tc6->ongoing_frame_tries = f->tries;
+#ifdef FRAME_TIMESTAMP_ENABLE
+			tc6->ongoing_tx_ts_capture_mode = f->tsc;
+#else /* FRAME_TIMESTAMP_ENABLE */
+			tc6->ongoing_tx_tsc = f->tsc;
+#endif /* FRAME_TIMESTAMP_ENABLE */
+			f->skb = NULL;
+			tc6->retx_head = (tc6->retx_head + 1) % OA_TC6_RETX_MAX;
+			tc6->retx_n--;
+		}
 		if (!tc6->ongoing_tx_skb) {
 			spin_lock_bh(&tc6->tx_skb_lock);
 			tc6->ongoing_tx_skb = tc6->waiting_tx_skb;
@@ -1759,10 +1989,13 @@ static u16 oa_tc6_prepare_spi_tx_buf_for_tx_skbs(struct oa_tc6 *tc6)
 #ifdef FRAME_TIMESTAMP_ENABLE
 			tc6->ongoing_tx_ts_capture_mode = tc6->waiting_tx_ts_capture_mode;
 			tc6->waiting_tx_ts_capture_mode = 0;
+			tc6->ongoing_frame_tsc = tc6->ongoing_tx_ts_capture_mode;
 #else /* FRAME_TIMESTAMP_ENABLE */
 			tc6->ongoing_tx_tsc = tc6->waiting_tx_tsc;
 			tc6->waiting_tx_tsc = 0;
+			tc6->ongoing_frame_tsc = tc6->ongoing_tx_tsc;
 #endif /* FRAME_TIMESTAMP_ENABLE */
+			tc6->ongoing_frame_tries = 0;
 			spin_unlock_bh(&tc6->tx_skb_lock);
 		}
 		if (!tc6->ongoing_tx_skb)
@@ -1810,24 +2043,6 @@ static u16 oa_tc6_prepare_spi_tx_buf_for_rx_chunks(struct oa_tc6 *tc6, u16 len)
 	return needed_empty_chunks * OA_TC6_CHUNK_SIZE + len;
 }
 
-/* The frames that ended in the transfer just run were freed while the transfer
- * was built. Count them as sent only when the MAC-PHY accepted the transfer
- * (no header bad, no device error), else as dropped: they may not have left.
- * A footer parity error (-EAGAIN) counts as accepted: the MOSI state is unknown.
- * TXBOE/TXBUE/TXFCSE in STATUS0 return 0 and are not handled here yet.
- */
-static void oa_tc6_account_xfer_tx(struct oa_tc6 *tc6, bool ok)
-{
-	if (ok) {
-		tc6->netdev->stats.tx_packets += tc6->xfer_tx_packets;
-		tc6->netdev->stats.tx_bytes += tc6->xfer_tx_bytes;
-	} else {
-		tc6->netdev->stats.tx_dropped += tc6->xfer_tx_packets;
-	}
-	tc6->xfer_tx_packets = 0;
-	tc6->xfer_tx_bytes = 0;
-}
-
 static int oa_tc6_try_spi_transfer(struct oa_tc6 *tc6)
 {
 	int ret;
@@ -1836,10 +2051,9 @@ static int oa_tc6_try_spi_transfer(struct oa_tc6 *tc6)
 		u16 spi_len = 0;
 
 		tc6->spi_data_tx_buf_offset = 0;
-		tc6->xfer_tx_packets = 0;
-		tc6->xfer_tx_bytes = 0;
+		tc6->xfer_tx_n = 0;
 
-		if (tc6->ongoing_tx_skb || tc6->waiting_tx_skb)
+		if (tc6->ongoing_tx_skb || tc6->waiting_tx_skb || tc6->retx_n)
 			spi_len = oa_tc6_prepare_spi_tx_buf_for_tx_skbs(tc6);
 
 		spi_len = oa_tc6_prepare_spi_tx_buf_for_rx_chunks(tc6, spi_len);
@@ -1857,14 +2071,20 @@ static int oa_tc6_try_spi_transfer(struct oa_tc6 *tc6)
 
 		ret = oa_tc6_spi_transfer(tc6, OA_TC6_DATA_HEADER, spi_len);
 		if (ret) {
-			oa_tc6_account_xfer_tx(tc6, false);
+			oa_tc6_tx_drop_frames(tc6, tc6->xfer_tx, tc6->xfer_tx_n);
+			tc6->xfer_tx_n = 0;
 			netdev_err(tc6->netdev,
 				   "SPI data transfer failed: %d\n", ret);
 			return ret;
 		}
 
 		ret = oa_tc6_process_spi_data_rx_buf(tc6, spi_len);
-		oa_tc6_account_xfer_tx(tc6, !ret || ret == -EAGAIN);
+		if (ret && ret != -EAGAIN) {
+			oa_tc6_tx_drop_frames(tc6, tc6->xfer_tx, tc6->xfer_tx_n);
+			tc6->xfer_tx_n = 0;
+		} else {
+			oa_tc6_tx_resolve(tc6);
+		}
 
 		if (ret && ret != -EAGAIN) {
 			oa_tc6_free_ongoing_skbs(tc6);
@@ -1898,7 +2118,7 @@ static irqreturn_t oa_tc6_macphy_threaded_irq(int irq, void *data)
 	spin_unlock_bh(&tc6->tx_skb_lock);
 
 	while (tc6->int_flag ||
-	       (tc6->waiting_tx_skb && tc6->tx_credits)) {
+	       ((tc6->waiting_tx_skb || tc6->retx_n) && tc6->tx_credits)) {
 		ret = oa_tc6_try_spi_transfer(tc6);
 		if (ret) {
 			oa_tc6_fatal_irq_off(tc6);
@@ -2282,7 +2502,8 @@ EXPORT_SYMBOL_GPL(oa_tc6_set_fatal_cb);
 void oa_tc6_get_tx_state(struct oa_tc6 *tc6, struct oa_tc6_tx_state *st)
 {
 	st->tx_pending = READ_ONCE(tc6->waiting_tx_skb) ||
-			 READ_ONCE(tc6->ongoing_tx_skb);
+			 READ_ONCE(tc6->ongoing_tx_skb) || READ_ONCE(tc6->retx_n) ||
+			 READ_ONCE(tc6->held_tx_n);
 	st->tx_credits = READ_ONCE(tc6->tx_credits);
 	st->disabled = READ_ONCE(tc6->disable_traffic);
 }
