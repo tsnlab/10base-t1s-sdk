@@ -28,13 +28,19 @@
 
 #include <linux/crc32.h>
 #include <linux/etherdevice.h>
+#include <linux/ethtool.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/of.h>
+#include <linux/phy.h>
+#include <linux/skbuff.h>
 #include <linux/spi/spi.h>
 #include <linux/sysfs.h>
 
+#include "../../../include/linux/oa_tc6.h"
 #include "lan865x_arch.h"
+#include "lan865x_health.h"
+#include "lan865x_variant.h"
 
 /* TC6 MMS0 (OPEN Alliance TC6 v1.1 9.2) */
 #define T1S_TC6_CONFIG0 0x00000004
@@ -256,3 +262,73 @@ ssize_t t1s_oaspi_regdump(struct lan865x_priv* priv, char* buf) {
     }
     return t1s_ptp_stats(priv, buf, n);
 }
+
+/* ---------------------------------------------------------------- variant */
+
+/* oa_tc6 part: the init step only (no vendor STATUS1 / IMASK1 bits) */
+/* LOFE unmasked by default: the t1s-oaspi LOFE means a short chunk / CSn glitch
+ * only (TC6 v1.1 7.5.2), so the frame it dropped is sent again.
+ */
+static const struct oa_tc6_chip_ops t1s_oaspi_tc6_ops = {
+    .chip_init = t1s_oaspi_chip_init,
+    .lofe_unmask = true,
+};
+
+#ifndef FRAME_TIMESTAMP_ENABLE
+static netdev_tx_t t1s_oaspi_xmit(struct lan865x_priv* priv, struct sk_buff* skb) {
+    u8 tsc = t1s_ptp_tx_request(priv, skb);
+    netdev_tx_t rc;
+
+    /* Software TX timestamp (SOF_TIMESTAMPING_TX_SOFTWARE) only for a
+     * frame that was queued: on NETDEV_TX_BUSY the stack sends the same
+     * skb again, and a second timestamp would sit in the socket error
+     * queue (ptp4l: "error on fda[0]", port FAULTY).  The extra reference
+     * keeps the skb while the SPI thread may already be done with it.
+     */
+    skb_get(skb);
+    rc = oa_tc6_start_xmit_tsc(priv->tc6, skb, tsc);
+    if (rc == NETDEV_TX_BUSY) {
+        t1s_ptp_tx_cancel(priv, tsc);
+    } else {
+        skb_tx_timestamp(skb);
+    }
+    consume_skb(skb);
+    return rc;
+}
+
+/* own PHC and frame timestamps (t1s_ptp.c); the LAN865x path of a
+ * TIMESTAMP=0 build keeps lan865x_ethtool_ops (no get_ts_info)
+ */
+static int t1s_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INFO* ts_info) {
+    return t1s_ptp_get_ts_info(netdev_priv(netdev), ts_info);
+}
+
+static const struct ethtool_ops t1s_ethtool_ops = {
+    .get_link_ksettings = phy_ethtool_get_link_ksettings,
+    .set_link_ksettings = phy_ethtool_set_link_ksettings,
+    .get_ts_info = t1s_ethtool_get_ts_info,
+    .get_sset_count = lan865x_get_sset_count,
+    .get_strings = lan865x_get_strings,
+    .get_ethtool_stats = lan865x_get_ethtool_stats,
+};
+#endif /* FRAME_TIMESTAMP_ENABLE */
+
+const struct lan865x_variant t1s_oaspi_variant = {
+    .chip = LAN865X_CHIP_T1S,
+    .irq_gpio = "irq", /* TC6 IRQn, active low */
+    .tc6_ops = &t1s_oaspi_tc6_ops,
+    .mac_in_chip_init = true,
+    .runtime_frame_ts = true,
+    .probe_cfg = t1s_oaspi_probe_cfg,
+    .set_macaddr = t1s_oaspi_set_macaddr,
+    .set_rx_mode = t1s_oaspi_set_rx_mode,
+    .mac_enable = t1s_oaspi_mac_enable,
+#ifndef FRAME_TIMESTAMP_ENABLE
+    .xmit = t1s_oaspi_xmit,
+    .hwtstamp_get = t1s_ptp_hwtstamp_get,
+    .hwtstamp_set = t1s_ptp_hwtstamp_set,
+    .ethtool_ops = &t1s_ethtool_ops,
+    .ptp_init = t1s_ptp_init,
+    .ptp_exit = t1s_ptp_exit,
+#endif /* FRAME_TIMESTAMP_ENABLE */
+};

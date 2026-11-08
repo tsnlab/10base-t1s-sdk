@@ -28,14 +28,8 @@
 #include "t1s_hat_fxl6408.h"
 #include "lan865x_chip.h"
 #include "t1s_oaspi.h"
+#include "lan865x_variant.h"
 #include <linux/version.h>
-
-/* Linux 6.11 renamed the ethtool get_ts_info argument type */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
-#define LAN865X_TS_INFO struct kernel_ethtool_ts_info
-#else
-#define LAN865X_TS_INFO struct ethtool_ts_info
-#endif
 
 #ifdef FRAME_TIMESTAMP_ENABLE
 #include "lan865x_ptp.h"
@@ -176,8 +170,8 @@ static int lan865x_reload_backoff_seed(struct lan865x_priv *priv)
     u32 ncr;
     int ret;
 
-    if (!backoff_seed || T1S_IS(priv)) {
-        return 0; /* t1s: no back-off seed register */
+    if (!backoff_seed || priv->variant->set_macaddr) {
+        return 0; /* the back-off seed register is a LAN8650/1 MAC one */
     }
     ret = oa_tc6_read_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, &ncr);
     if (ret || !(ncr & MAC_NET_CTL_TXEN)) {
@@ -196,8 +190,8 @@ static int lan865x_set_hw_macaddr(struct lan865x_priv *priv, const u8 *mac)
     u32 regval;
     int ret;
 
-    if (T1S_IS(priv)) {
-        return t1s_oaspi_set_macaddr(priv, mac);
+    if (priv->variant->set_macaddr) {
+        return priv->variant->set_macaddr(priv, mac);
     }
     if (backoff_seed) {
         u32 seed = lan865x_backoff_seed(mac);
@@ -264,24 +258,6 @@ static int lan865x_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INF
 
     return 0;
 }
-#endif /* FRAME_TIMESTAMP_ENABLE */
-
-#ifndef FRAME_TIMESTAMP_ENABLE
-/* t1s-oaspi: own PHC and frame timestamps (t1s_ptp.c); the LAN865x path of a
- * TIMESTAMP=0 build keeps lan865x_ethtool_ops (no get_ts_info)
- */
-static int t1s_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INFO* ts_info) {
-    return t1s_ptp_get_ts_info(netdev_priv(netdev), ts_info);
-}
-
-static const struct ethtool_ops t1s_ethtool_ops = {
-    .get_link_ksettings = phy_ethtool_get_link_ksettings,
-    .set_link_ksettings = phy_ethtool_set_link_ksettings,
-    .get_ts_info = t1s_ethtool_get_ts_info,
-    .get_sset_count = lan865x_get_sset_count,
-    .get_strings = lan865x_get_strings,
-    .get_ethtool_stats = lan865x_get_ethtool_stats,
-};
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
 static const struct ethtool_ops lan865x_ethtool_ops = {
@@ -419,8 +395,8 @@ static void lan865x_multicast_work_handler(struct work_struct *work)
     u32 regval = 0;
     int ret;
 
-    if (T1S_IS(priv)) {
-        t1s_oaspi_set_rx_mode(priv);
+    if (priv->variant->set_rx_mode) {
+        priv->variant->set_rx_mode(priv);
         return;
     }
     if (priv->netdev->flags & IFF_PROMISC) {
@@ -495,25 +471,8 @@ static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
 
     return oa_tc6_start_xmit(priv->tc6, skb, ts_capture_mode);
 #else /* FRAME_TIMESTAMP_ENABLE */
-    if (T1S_IS(priv)) {
-        u8 tsc = t1s_ptp_tx_request(priv, skb);
-        netdev_tx_t rc;
-
-        /* Software TX timestamp (SOF_TIMESTAMPING_TX_SOFTWARE) only for a
-         * frame that was queued: on NETDEV_TX_BUSY the stack sends the same
-         * skb again, and a second timestamp would sit in the socket error
-         * queue (ptp4l: "error on fda[0]", port FAULTY).  The extra reference
-         * keeps the skb while the SPI thread may already be done with it.
-         */
-        skb_get(skb);
-        rc = oa_tc6_start_xmit_tsc(priv->tc6, skb, tsc);
-        if (rc == NETDEV_TX_BUSY) {
-            t1s_ptp_tx_cancel(priv, tsc);
-        } else {
-            skb_tx_timestamp(skb);
-        }
-        consume_skb(skb);
-        return rc;
+    if (priv->variant->xmit) {
+        return priv->variant->xmit(priv, skb);
     }
     return oa_tc6_start_xmit(priv->tc6, skb);
 #endif /* FRAME_TIMESTAMP_ENABLE */
@@ -522,8 +481,8 @@ static netdev_tx_t lan865x_send_packet(struct sk_buff *skb,
 static int lan865x_hw_disable(struct lan865x_priv* priv) {
     u32 regval;
 
-    if (T1S_IS(priv)) {
-        return t1s_oaspi_mac_enable(priv, false);
+    if (priv->variant->mac_enable) {
+        return priv->variant->mac_enable(priv, false);
     }
 
     if (oa_tc6_read_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, &regval)) {
@@ -558,8 +517,8 @@ static int lan865x_net_close(struct net_device *netdev)
 static int lan865x_hw_enable(struct lan865x_priv* priv) {
     u32 regval;
 
-    if (T1S_IS(priv)) {
-        return t1s_oaspi_mac_enable(priv, true);
+    if (priv->variant->mac_enable) {
+        return priv->variant->mac_enable(priv, true);
     }
 
     if (oa_tc6_read_register(priv->tc6, LAN865X_REG_MAC_NET_CTL, &regval)) {
@@ -583,10 +542,11 @@ int lan865x_restore_hw_config(struct lan865x_priv* priv)
 {
     int ret;
 
-    /* t1s: node id and MAC address already written by t1s_oaspi_chip_init()
-     * in oa_tc6_hw_reinit(), before CONFIG0.SYNC (TC6 v1.1 7.6)
+    /* mac_in_chip_init (t1s): node id and MAC address already written by
+     * the chip_init step in oa_tc6_hw_reinit(), before CONFIG0.SYNC (TC6
+     * v1.1 7.6)
      */
-    if (!T1S_IS(priv)) {
+    if (!priv->variant->mac_in_chip_init) {
         ret = lan865x_set_nodeid(priv, priv->node_id);
         if (ret) {
             return ret;
@@ -641,11 +601,11 @@ static int lan865x_netdev_ioctl(struct net_device* netdev, struct ifreq* ifr, in
 #else /* FRAME_TIMESTAMP_ENABLE */
     struct lan865x_priv* priv = netdev_priv(netdev);
 
-    if (T1S_IS(priv) && cmd == SIOCGHWTSTAMP) {
-        return t1s_ptp_hwtstamp_get(priv, ifr);
+    if (priv->variant->hwtstamp_get && cmd == SIOCGHWTSTAMP) {
+        return priv->variant->hwtstamp_get(priv, ifr);
     }
-    if (T1S_IS(priv) && cmd == SIOCSHWTSTAMP) {
-        return t1s_ptp_hwtstamp_set(priv, ifr);
+    if (priv->variant->hwtstamp_set && cmd == SIOCSHWTSTAMP) {
+        return priv->variant->hwtstamp_set(priv, ifr);
     }
     return phy_do_ioctl_running(netdev, ifr, cmd);
 #endif /* FRAME_TIMESTAMP_ENABLE */
@@ -714,8 +674,8 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
 
     u8 node_id;
 
-    if (T1S_IS(priv)) {
-        /* no FXL6408 / DIP switch: node id from DT (t1s_oaspi_probe_cfg) */
+    if (!priv->variant->board_hat) {
+        /* no FXL6408 / DIP switch: node id from probe_cfg (DT) */
         node_id = priv->node_id;
     } else {
         /* Read input status register */
@@ -724,10 +684,11 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
         node_id = (val & 0xF0) >> 4;
         priv->node_id = node_id;
     }
-    /* t1s: written by t1s_oaspi_chip_init() before CONFIG0.SYNC (TC6 7.6);
-     * this runs before oa_tc6_init_chip() there, without SPI access.
+    /* mac_in_chip_init (t1s): written by the chip_init step before
+     * CONFIG0.SYNC (TC6 7.6); this runs before oa_tc6_init_ops() there,
+     * without SPI access.
      */
-    if (!T1S_IS(priv)) {
+    if (!priv->variant->mac_in_chip_init) {
         lan865x_set_nodeid(priv, node_id);
     }
 
@@ -743,6 +704,19 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
 #endif
 }
 
+/* LAN8650/1: everything the lan865x.c way (lan865x_variant.h) */
+static const struct lan865x_variant lan865x_variant = {
+    .chip = LAN865X_CHIP_LAN865X,
+    .irq_gpio = "lan8651irq",
+    .tc6_ops = &lan865x_chip_ops,
+    .board_hat = true,
+};
+
+static const struct lan865x_variant* lan865x_variant_of(u8 chip)
+{
+    return chip == LAN865X_CHIP_T1S ? &t1s_oaspi_variant : &lan865x_variant;
+}
+
 /* ---------- SPI Driver ---------- */
 static int lan865x_probe(struct spi_device *spi)
 {
@@ -753,9 +727,10 @@ static int lan865x_probe(struct spi_device *spi)
     int ret;
     /* LAN865X_CHIP_T1S for "tsnlab,t1s-oaspi", else 0 (LAN865x) */
     u8 chip = (u8)(uintptr_t)spi_get_device_match_data(spi);
+    const struct lan865x_variant* v = lan865x_variant_of(chip);
 
 #ifdef FRAME_TIMESTAMP_ENABLE
-    if (chip == LAN865X_CHIP_T1S) {
+    if (v->runtime_frame_ts) {
         dev_err(&spi->dev, "t1s-oaspi needs a TIMESTAMP=0 build (no LAN865x PTP / RX timestamp layout)\n");
         return -EOPNOTSUPP;
     }
@@ -774,7 +749,7 @@ static int lan865x_probe(struct spi_device *spi)
 #elif defined(CONFIG_RPI5)
     /* Get lan8651 phy irq from device tree*/
     /* t1s: irq-gpios (TC6 IRQn, active low), LAN865x: lan8651irq-gpios */
-    lan8651_phy_irq_gpiod = devm_gpiod_get(&spi->dev, chip == LAN865X_CHIP_T1S ? "irq" : "lan8651irq", GPIOD_IN);
+    lan8651_phy_irq_gpiod = devm_gpiod_get(&spi->dev, v->irq_gpio, GPIOD_IN);
     if (IS_ERR(lan8651_phy_irq_gpiod)) {
         ret = PTR_ERR(lan8651_phy_irq_gpiod);
         dev_err(&spi->dev, "Failed to get IRQ: %d\n", ret);
@@ -795,10 +770,11 @@ static int lan865x_probe(struct spi_device *spi)
     priv = netdev_priv(netdev);
     priv->netdev = netdev;
     priv->spi = spi;
-    priv->chip = chip;
+    priv->chip = v->chip;
+    priv->variant = v;
 
-    if (chip == LAN865X_CHIP_T1S) {
-        t1s_oaspi_probe_cfg(priv, spi); /* SPI mode 0 + clock, node id */
+    if (v->probe_cfg) {
+        v->probe_cfg(priv, spi); /* t1s: SPI mode 0 + clock, node id */
     } else {
         /* Set spi mode */
         spi->mode = SPI_MODE_3;
@@ -814,18 +790,17 @@ static int lan865x_probe(struct spi_device *spi)
 
     u8 mac[ETH_ALEN];
 
-    /* t1s: the MAC address (and the PLCA node id from DT) are known before
-     * oa_tc6_init_chip(); t1s_oaspi_chip_init() writes them, and ZARFE,
-     * before CONFIG0.SYNC (TC6 v1.1 7.6).
+    /* mac_in_chip_init (t1s): the MAC address (and the PLCA node id from
+     * DT) are known before oa_tc6_init_ops(); the chip_init step writes
+     * them, and ZARFE, before CONFIG0.SYNC (TC6 v1.1 7.6).
      */
-    if (chip == LAN865X_CHIP_T1S) {
+    if (v->mac_in_chip_init) {
         get_defined_mac(&spi->dev, priv, mac);
         eth_hw_addr_set(netdev, mac);
     }
 
     /* Initialize oa_tc6 and lan8651*/
-    priv->tc6 = chip == LAN865X_CHIP_T1S ? oa_tc6_init_chip(spi, netdev, t1s_oaspi_chip_init)
-                                         : oa_tc6_init_ops(spi, netdev, &lan865x_chip_ops);
+    priv->tc6 = oa_tc6_init_ops(spi, netdev, v->tc6_ops);
     g_tc6 = priv->tc6;
     if (!priv->tc6) {
         dev_err(&spi->dev, "oa_tc6_init failed\n");
@@ -840,7 +815,7 @@ static int lan865x_probe(struct spi_device *spi)
         goto sysfs_create_error;
     }
     /* t1s: no FXL6408 on TSN-HAT R2 */
-    ret = chip == LAN865X_CHIP_T1S ? 0 : t1s_hat_fxl6408_init(priv, &spi->dev);
+    ret = v->board_hat ? t1s_hat_fxl6408_init(priv, &spi->dev) : 0;
     if (ret) {
         dev_err(&spi->dev, "Failed to initialize node ID updater: %d\n", ret);
         goto t1s_hat_fxl6408_init_error;
@@ -853,7 +828,7 @@ static int lan865x_probe(struct spi_device *spi)
         goto t1s_hat_fxl6408_init_error;
     }
 
-    if (chip != LAN865X_CHIP_T1S) {
+    if (!v->mac_in_chip_init) {
         ret = oa_tc6_zero_align_receive_frame_enable(priv->tc6);
         if (ret) {
             dev_err(&spi->dev, "Failed to set ZARFE: %d\n", ret);
@@ -869,12 +844,7 @@ static int lan865x_probe(struct spi_device *spi)
     netdev->if_port = IF_PORT_10BASET;
     netdev->irq = spi->irq;
     netdev->netdev_ops = &lan865x_netdev_ops;
-    netdev->ethtool_ops = &lan865x_ethtool_ops;
-#ifndef FRAME_TIMESTAMP_ENABLE
-    if (chip == LAN865X_CHIP_T1S) {
-        netdev->ethtool_ops = &t1s_ethtool_ops;
-    }
-#endif /* FRAME_TIMESTAMP_ENABLE */
+    netdev->ethtool_ops = v->ethtool_ops ? v->ethtool_ops : &lan865x_ethtool_ops;
 
     ret = register_netdev(netdev);
     if (ret) {
@@ -890,8 +860,8 @@ static int lan865x_probe(struct spi_device *spi)
     }
 #else /* FRAME_TIMESTAMP_ENABLE */
     priv->ptpdev = NULL;
-    if (chip == LAN865X_CHIP_T1S) {
-        ret = t1s_ptp_init(priv);
+    if (v->ptp_init) {
+        ret = v->ptp_init(priv);
         if (ret) {
             /* the network interface works without it */
             dev_err(&spi->dev, "t1s-oaspi: PTP clock not registered: %d\n", ret);
@@ -955,7 +925,9 @@ static void lan865x_remove(struct spi_device *spi)
 
     dev_info(&spi->dev, "lan865x: MAC after unregister %pM\n", netdev->dev_addr);
 #ifndef FRAME_TIMESTAMP_ENABLE
-    t1s_ptp_exit(priv);
+    if (priv->variant->ptp_exit) {
+        priv->variant->ptp_exit(priv);
+    }
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
 #ifdef FRAME_TIMESTAMP_ENABLE
