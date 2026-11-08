@@ -266,8 +266,12 @@ ssize_t t1s_oaspi_regdump(struct lan865x_priv* priv, char* buf) {
 /* ---------------------------------------------------------------- variant */
 
 /* oa_tc6 part: the init step only (no vendor STATUS1 / IMASK1 bits) */
+/* LOFE unmasked by default: the t1s-oaspi LOFE means a short chunk / CSn glitch
+ * only (TC6 v1.1 7.5.2), so the frame it dropped is sent again.
+ */
 static const struct oa_tc6_chip_ops t1s_oaspi_tc6_ops = {
     .chip_init = t1s_oaspi_chip_init,
+    .lofe_unmask = true,
 };
 
 #ifndef FRAME_TIMESTAMP_ENABLE
