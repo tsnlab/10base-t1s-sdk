@@ -117,6 +117,8 @@ struct lan865x_priv {
     struct mutex fxl6408_lock;
     bool fxl6408_initialized;
     u8 node_id;
+    u8 dt_mac[6];   /* MAC address from DT / nvmem cell (lan865x_dt_mac()), valid if dt_mac_ok */
+    bool dt_mac_ok;
     u8 chip;                               /* LAN865X_CHIP_* (t1s_oaspi.h), from the DT match */
     const struct lan865x_variant* variant; /* lan865x_variant.h */
 
