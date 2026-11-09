@@ -155,7 +155,11 @@ struct oa_tc6 {
 	s8 xfer_hdrb_chunk;     /* first chunk with footer HDRB, -1: none */
 	s8 xfer_bad_chunk;      /* first chunk with a footer parity error, -1: none */
 	s8 xfer_ovf_chunk;      /* first chunk whose footer EXST showed STATUS0.TXBOE, -1: none */
+	s8 xfer_txc0_chunk;     /* first TX data chunk sent after a footer with TXC 0 (7.3.8.2), -1: none */
+	s16 xfer_prev_txc;      /* TXC of the previous footer, -1: unknown (parity error) - taken as possibly 0 */
+	u8 xfer_tx_chunks;      /* TX data chunks at the start of the transfer being processed */
 	bool tx_ovf_seen;       /* STATUS0.TXBOE read for the transfer being processed */
+	bool tx_pe_seen;        /* STATUS0.TXPE read with TXBOE: decided after the footers */
 	bool tx_dropped_by_dev; /* STATUS0 LOFE / HDRE: frame in progress dropped */
 	u8 rx_chunks_available;
 	bool wait_until_start_valid;
@@ -1090,20 +1094,62 @@ static void oa_tc6_tx_drop_kept(struct oa_tc6 *tc6)
  *    (when unmasked): sent again if set, taken if not;
  *  - STATUS0.LOFE / HDRE without either: the MAC-PHY dropped the frame in
  *    progress (7.5.1 / 7.5.2): send it again from its start;
- *  - STATUS0.TXBOE seen at the footer of chunk k (7.3.8.2): as footer HDRB
- *    from chunk k on - the chunk that overflowed was ignored and its frame
- *    dropped, the later chunks of that frame were refused (TXPE).
+ *  - STATUS0.TXBOE (7.3.8.2): as footer HDRB from the chunk that overflowed
+ *    on - it was ignored and its frame dropped, the later chunks of that
+ *    frame were refused (TXPE).  The chunk that overflowed is, by 7.3.8.2,
+ *    the first TX data chunk written while the previous data footer showed
+ *    TXC 0 (oa_tc6_ovf_chunk()).  The footer EXST bit is not used for this:
+ *    it is set by any STATUS0 / STATUS1 bit, so an earlier status in the
+ *    same transfer would point before the overflow and frames the MAC-PHY
+ *    took would be sent twice.
  */
+static int oa_tc6_ovf_chunk(struct oa_tc6 *tc6)
+{
+	if (!tc6->tx_ovf_seen)
+		return -1;
+	if (tc6->xfer_txc0_chunk >= 0)
+		return tc6->xfer_txc0_chunk;
+	/* no TX chunk after a TXC 0 footer in this transfer (a MAC-PHY whose
+	 * TXC was not honest): from the first EXST chunk, as before - it may
+	 * send a taken frame twice, never lose one
+	 */
+	return tc6->xfer_ovf_chunk;
+}
+
+/* A TXPE read with TXBOE is the overflow's consequence only if the frame of
+ * the ignored chunk went on in this transfer (its next chunks are data valid
+ * without start for the MAC-PHY, 7.3.8.1).  Otherwise it is a TXPE of its
+ * own, which stays fatal.  When the overflowed chunk is not known (no TX
+ * chunk after a TXC 0 footer) the TXPE is taken as the consequence, as
+ * before.
+ */
+static bool oa_tc6_txpe_explained(struct oa_tc6 *tc6)
+{
+	int k = tc6->xfer_txc0_chunk;
+
+	if (!tc6->tx_ovf_seen)
+		return false;
+	if (k < 0)
+		return true;
+	for (int i = 0; i < tc6->xfer_tx_n; i++)
+		if (tc6->xfer_tx[i].ev_chunk >= k)
+			return tc6->xfer_tx[i].ev_chunk > k;
+	/* the frame in progress at the end of the transfer */
+	return k + 1 < tc6->xfer_tx_chunks;
+}
+
 static void oa_tc6_tx_resolve(struct oa_tc6 *tc6)
 {
 	int k, n = tc6->xfer_tx_n;
 	bool drop = tc6->tx_dropped_by_dev;
 	/* first chunk from which the MAC-PHY surely dropped TX data */
 	int kd = tc6->xfer_hdrb_chunk;
+	int ko = oa_tc6_ovf_chunk(tc6);
 
-	if (tc6->xfer_ovf_chunk >= 0 && (kd < 0 || tc6->xfer_ovf_chunk < kd))
-		kd = tc6->xfer_ovf_chunk;
+	if (ko >= 0 && (kd < 0 || ko < kd))
+		kd = ko;
 	tc6->tx_ovf_seen = false;
+	tc6->tx_pe_seen = false;
 	tc6->tx_dropped_by_dev = false;
 	tc6->xfer_tx_n = 0;
 
@@ -1375,8 +1421,11 @@ static int oa_tc6_process_extended_status(struct oa_tc6 *tc6)
 			netdev_err(tc6->netdev, "Transmit protocol error\n");
 			return -ENODEV;
 		}
-		net_warn_ratelimited("%s: transmit protocol error after a TX buffer overflow\n",
-				     tc6->netdev->name);
+		/* explained only if the overflowed frame went on after the ignored
+		 * chunk in this transfer - known once all footers are seen
+		 * (oa_tc6_txpe_explained())
+		 */
+		tc6->tx_pe_seen = true;
 	}
 	/* Loss of framing (7.5.2) and header parity error (7.5.1) are not
 	 * fatal (upstream v7.3: -ENODEV, a MAC-PHY reset): the MAC-PHY dropped
@@ -1405,7 +1454,17 @@ static int oa_tc6_process_rx_chunk_footer(struct oa_tc6 *tc6, u32 footer,
 	 * 2. errors if any from MAC-PHY
 	 * 3. receive chunks available
 	 */
+	/* 7.3.8.2: a TX data chunk written while the previous data footer
+	 * showed TXC 0 is the one the MAC-PHY ignores (TXBOE).  A previous
+	 * footer that could not be trusted (parity error) may have shown 0:
+	 * take this chunk too, so the restart point is never late (a frame may
+	 * be sent twice, none is lost).
+	 */
+	if (chunk < tc6->xfer_tx_chunks && tc6->xfer_prev_txc <= 0 &&
+	    tc6->xfer_txc0_chunk < 0)
+		tc6->xfer_txc0_chunk = chunk;
 	tc6->tx_credits = FIELD_GET(OA_TC6_DATA_FOOTER_TX_CREDITS, footer);
+	tc6->xfer_prev_txc = tc6->tx_credits;
 	tc6->rx_chunks_available =
 		FIELD_GET(OA_TC6_DATA_FOOTER_RX_CHUNKS, footer);
 
@@ -1823,6 +1882,10 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 	tc6->xfer_hdrb_chunk = -1;
 	tc6->xfer_bad_chunk = -1;
 	tc6->xfer_ovf_chunk = -1;
+	tc6->xfer_txc0_chunk = -1;
+	/* credits the TX chunks were planned with = the TXC before chunk 0 */
+	tc6->xfer_prev_txc = tc6->tx_credits;
+	tc6->tx_pe_seen = false;
 	/* also here, not only in oa_tc6_tx_resolve(): a fatal return (no
 	 * resolve) must not leave it set for the transfer after the recovery,
 	 * where it would let a TXPE alone pass as non-fatal
@@ -1855,6 +1918,7 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 				return -EIO;
 			}
 			tc6->tx_credits = 0;
+			tc6->xfer_prev_txc = -1;	/* not trusted: unknown */
 			tc6->rx_chunks_available = 0;
 			tc6->int_flag = true;
 			oa_tc6_look_for_new_frame(tc6);
@@ -1889,6 +1953,16 @@ static int oa_tc6_process_spi_data_rx_buf(struct oa_tc6 *tc6, u16 length)
 				retry = true;
 			}
 		}
+	}
+
+	if (tc6->tx_pe_seen) {
+		if (!oa_tc6_txpe_explained(tc6)) {
+			netdev_err(tc6->netdev,
+				   "Transmit protocol error (not from the TX buffer overflow)\n");
+			return -ENODEV;
+		}
+		net_warn_ratelimited("%s: transmit protocol error after a TX buffer overflow\n",
+				     tc6->netdev->name);
 	}
 
 	/* Not bailing out on recoverable error codes, -EAGAIN and
@@ -2092,6 +2166,7 @@ static int oa_tc6_try_spi_transfer(struct oa_tc6 *tc6)
 
 		if (tc6->ongoing_tx_skb || tc6->waiting_tx_skb || tc6->retx_n)
 			spi_len = oa_tc6_prepare_spi_tx_buf_for_tx_skbs(tc6);
+		tc6->xfer_tx_chunks = spi_len / OA_TC6_CHUNK_SIZE;
 
 		spi_len = oa_tc6_prepare_spi_tx_buf_for_rx_chunks(tc6, spi_len);
 
