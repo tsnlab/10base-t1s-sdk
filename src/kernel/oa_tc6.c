@@ -156,7 +156,7 @@ struct oa_tc6 {
 	s8 xfer_bad_chunk;      /* first chunk with a footer parity error, -1: none */
 	s8 xfer_ovf_chunk;      /* first chunk whose footer EXST showed STATUS0.TXBOE, -1: none */
 	s8 xfer_txc0_chunk;     /* first TX data chunk sent after a footer with TXC 0 (7.3.8.2), -1: none */
-	s16 xfer_prev_txc;      /* TXC of the previous trusted footer, -1: unknown (parity error) */
+	s16 xfer_prev_txc;      /* TXC of the previous footer, -1: unknown (parity error) - taken as possibly 0 */
 	u8 xfer_tx_chunks;      /* TX data chunks at the start of the transfer being processed */
 	bool tx_ovf_seen;       /* STATUS0.TXBOE read for the transfer being processed */
 	bool tx_pe_seen;        /* STATUS0.TXPE read with TXBOE: decided after the footers */
@@ -1455,9 +1455,12 @@ static int oa_tc6_process_rx_chunk_footer(struct oa_tc6 *tc6, u32 footer,
 	 * 3. receive chunks available
 	 */
 	/* 7.3.8.2: a TX data chunk written while the previous data footer
-	 * showed TXC 0 is the one the MAC-PHY ignores (TXBOE)
+	 * showed TXC 0 is the one the MAC-PHY ignores (TXBOE).  A previous
+	 * footer that could not be trusted (parity error) may have shown 0:
+	 * take this chunk too, so the restart point is never late (a frame may
+	 * be sent twice, none is lost).
 	 */
-	if (chunk < tc6->xfer_tx_chunks && tc6->xfer_prev_txc == 0 &&
+	if (chunk < tc6->xfer_tx_chunks && tc6->xfer_prev_txc <= 0 &&
 	    tc6->xfer_txc0_chunk < 0)
 		tc6->xfer_txc0_chunk = chunk;
 	tc6->tx_credits = FIELD_GET(OA_TC6_DATA_FOOTER_TX_CREDITS, footer);
