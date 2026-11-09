@@ -16,6 +16,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
+#include <linux/of_net.h>
 #include <linux/phy.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
@@ -649,8 +650,33 @@ static int lan865x_release(struct inode* inode, struct file* file) {
     return 0;
 }
 
+/* MAC address from the device tree, the Linux way (all chips): of_get_mac_address()
+ * looks at "mac-address", "local-mac-address" and the nvmem cell "mac-address"
+ * (e.g. the EUI-48 of a board EEPROM on at24), and only returns a valid unicast
+ * address. Called in probe before any SPI access, so -EPROBE_DEFER (nvmem
+ * provider not bound yet) can be returned as is. Any other error: no DT address,
+ * get_defined_mac() takes the build-time / random / default address.
+ */
+static int lan865x_dt_mac(struct device *dev, struct lan865x_priv *priv)
+{
+    int ret = of_get_mac_address(dev->of_node, priv->dt_mac);
+
+    priv->dt_mac_ok = (ret == 0);
+    if (ret == -EPROBE_DEFER) {
+        return ret;
+    }
+    if (ret) {
+        dev_warn(dev, "no MAC address in DT / nvmem (%d), using the fallback address\n", ret);
+    }
+    return 0;
+}
+
 static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *mac)
 {
+    if (priv->dt_mac_ok) {
+        ether_addr_copy(mac, priv->dt_mac);
+        dev_info(dev, "Using MAC %pM from DT / nvmem\n", mac);
+    } else {
 #ifdef USE_RANDOM_MAC
     eth_random_addr(mac);
     dev_info(dev, "Using runtime random MAC %pM\n", mac);
@@ -671,6 +697,7 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
         dev_warn(dev, "Default MAC invalid, fallback to random %pM\n", mac);
     }
 #endif
+    }
 
     u8 node_id;
 
@@ -693,7 +720,7 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
     }
 
 #ifdef ENABLE_DIPSWITCH
-    {
+    if (!priv->dt_mac_ok) { /* a DT / EEPROM address is used as is */
         if (node_id >= 0) {
             mac[5] = (mac[5] & 0xF0) | (node_id & 0x0F);
             dev_info(dev, "MAC updated with NodeID=%d -> %pM\n", node_id, mac);
@@ -768,6 +795,11 @@ static int lan865x_probe(struct spi_device *spi)
         return -ENOMEM;
 
     priv = netdev_priv(netdev);
+    ret = lan865x_dt_mac(&spi->dev, priv);
+    if (ret) {
+        free_netdev(netdev);
+        return ret;
+    }
     priv->netdev = netdev;
     priv->spi = spi;
     priv->chip = v->chip;
