@@ -358,10 +358,26 @@ void lan865x_health_tx_timeout(struct net_device* netdev, unsigned int txqueue) 
     lan865x_trigger_recovery(priv, LAN865X_RCV_WATCHDOG);
 }
 
+/* Frames the chip finished: *ok = sent OK, *att = sent OK or ended with an
+ * error (a frame, not an attempt).  LAN865x: STATS12 FTX / STATS11 TFTX.
+ * t1s-oaspi: aFramesTransmittedOK, plus the frames that ended in excessive
+ * collisions or an internal MAC error (the MAC statistics block).
+ */
+static void lan865x_tx_counts(struct lan865x_priv* priv, u64* ok, u64* att) {
+    if (T1S_IS(priv)) {
+        const u64* t = priv->t1s_stats;
+
+        *ok = t[T1S_STAT_TX_OK];
+        *att = *ok + t[T1S_STAT_TX_XSCOL] + t[T1S_STAT_TX_INTERR];
+    } else {
+        *ok = priv->hwstats[LAN865X_HW_FTX];
+        *att = priv->hwstats[LAN865X_HW_TFTX];
+    }
+}
+
 static void lan865x_rebaseline(struct lan865x_priv* priv) {
     priv->replay_host_base = priv->netdev->stats.tx_packets;
-    priv->replay_chip_base = priv->hwstats[LAN865X_HW_FTX];
-    priv->replay_att_base = priv->hwstats[LAN865X_HW_TFTX];
+    lan865x_tx_counts(priv, &priv->replay_chip_base, &priv->replay_att_base);
     priv->stall_since = 0;
     priv->wait_since = 0;
     priv->cden_cur = -1; /* init_lan865x() set CDEN = 1; re-apply the policy */
@@ -383,9 +399,10 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
         return; /* fatal path already triggered the recovery */
     }
 
+    lan865x_tx_counts(priv, &chip, &att);
     host = priv->netdev->stats.tx_packets - priv->replay_host_base;
-    chip = priv->hwstats[LAN865X_HW_FTX] - priv->replay_chip_base;
-    att = priv->hwstats[LAN865X_HW_TFTX] - priv->replay_att_base;
+    chip -= priv->replay_chip_base;
+    att -= priv->replay_att_base;
     /* Neither FTX (sent OK) nor TFTX (attempted, incl. errors) can exceed
      * what the host handed over.  TFTX counts frames, not attempts:
      * measured on the lab LAN8651, TFTX == FTX with 629 PHY collisions on
@@ -439,15 +456,13 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
         priv->wait_since = 0;
     }
 
-    /* TX progress: the chip's TFTX on a LAN865x.  The t1s MAC has no
-     * LAN865x STATS11 (MMS1 >= 0x100 is not accessed, TFTX stays 0), so
-     * there the progress is the frames the chip took over SPI (tx_packets,
-     * counted when the last chunk of a frame goes out with credits).  A
-     * truly stalled chip grants no credits, so tx_packets stops too.
-     * Without this a saturated t1s link (TXC 0 at every poll, pending
-     * skb) was reset every few seconds while sending ~800 frames/s.
+    /* TX progress: the frames the chip finished on the line (sent OK or
+     * ended with an error, lan865x_tx_counts()) - LAN865x TFTX, t1s-oaspi
+     * its MAC statistics.  A merely congested segment keeps this moving; a
+     * saturated link (TXC 0 at every poll, pending skb) is not a stall
+     * while it does.
      */
-    prog = T1S_IS(priv) ? priv->netdev->stats.tx_packets : priv->hwstats[LAN865X_HW_TFTX];
+    lan865x_tx_counts(priv, &chip, &prog);
     if (!priv->stall_since || prog != priv->stall_tftx) {
         /* first suspicion, or the chip is still finishing frames */
         priv->stall_since = jiffies | 1;
@@ -483,7 +498,9 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
 static void lan865x_dump_state(struct lan865x_priv* priv, const char* when) {
     struct oa_tc6_tx_state st;
     u32 st01[2] = {0}, bufsts = 0, ncr = 0, plca = 0, cd = 0;
+    u64 tok, tatt;
 
+    lan865x_tx_counts(priv, &tok, &tatt); /* shown as FTX / TFTX on both chips */
     oa_tc6_get_tx_state(priv->tc6, &st);
     oa_tc6_read_registers(priv->tc6, 0x00000008, st01, 2); /* OA_STATUS0/1 */
     oa_tc6_read_register(priv->tc6, 0x0000000B, &bufsts);  /* OA_BUFSTS */
@@ -497,8 +514,8 @@ static void lan865x_dump_state(struct lan865x_priv* priv, const char* when) {
                 "%s: STATUS0=0x%08x STATUS1=0x%08x BUFSTS=0x%08x (TXC=%u RBA=%u) NCR=0x%08x PLCA_STS=0x%04x "
                 "CDCTL0=0x%04x | footer TXC=%u pending=%d | XCOL=%llu TFTX=%llu FTX=%llu CORTX=%llu tx_packets=%lu\n",
                 when, st01[0], st01[1], bufsts, (bufsts >> 8) & 0xFF, bufsts & 0xFF, ncr, plca, cd, st.tx_credits,
-                st.tx_pending, priv->hwstats[LAN865X_HW_XCOL], priv->hwstats[LAN865X_HW_TFTX],
-                priv->hwstats[LAN865X_HW_FTX], priv->hwstats[LAN865X_HW_CORTX], priv->netdev->stats.tx_packets);
+                st.tx_pending, priv->hwstats[LAN865X_HW_XCOL], tatt, tok, priv->hwstats[LAN865X_HW_CORTX],
+                priv->netdev->stats.tx_packets);
 }
 
 static bool lan865x_try_txen_toggle(struct lan865x_priv* priv) {
