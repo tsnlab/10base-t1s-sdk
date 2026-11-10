@@ -82,6 +82,13 @@ enum lan865x_hwstat_id {
     LAN865X_HWSTAT_NUM,
 };
 
+/* t1s-oaspi: the MAC statistics block MMS1 0x40..0x5A (t1s_oaspi.c
+ * t1s_oaspi_poll_stats), 32-bit saturating clear-on-read counters.  It
+ * replaces the LAN865x hardware counters (LAN865X_HW_*) in ethtool -S;
+ * the driver counters (LAN865X_SW_*) are shown for both chips.
+ */
+#define LAN865X_T1S_NSTATS 27
+
 int lan865x_health_init(struct lan865x_priv* priv);
 void lan865x_health_start(struct lan865x_priv* priv);
 void lan865x_health_stop(struct lan865x_priv* priv);
