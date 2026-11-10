@@ -134,6 +134,7 @@ struct lan865x_priv {
     struct mutex hw_lock; /* monitor work vs. recovery */
     spinlock_t stats_lock;
     u64 hwstats[LAN865X_HWSTAT_NUM];
+    u64 t1s_stats[LAN865X_T1S_NSTATS]; /* t1s-oaspi MAC statistics (T1S_IS) */
     /* TX stall detection / recovery */
     struct delayed_work rcv_work;
     unsigned long rcv_flags; /* LAN865X_RCV_PENDING, LAN865X_RCV_STOPPING */

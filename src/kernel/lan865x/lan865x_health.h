@@ -57,7 +57,7 @@ enum lan865x_hwstat_id {
     LAN865X_HW_STS1_ESDERR,
     LAN865X_HW_STS1_DEC5B,
     /* driver */
-    LAN865X_SW_SATURATED,   /* polls where an 8-bit chip counter was 0xFF */
+    LAN865X_SW_SATURATED,   /* polls where a chip counter was saturated (LAN865x 8-bit 0xFF, t1s-oaspi 32-bit) */
     LAN865X_SW_POLL_ERRORS, /* SPI errors while polling */
     /* TX stall detection / recovery */
     LAN865X_SW_STALL_DETECTED,  /* TXC 0 + no TX progress for tx_stall_ms */
@@ -81,6 +81,13 @@ enum lan865x_hwstat_id {
     LAN865X_SW_PLCA_EN,  /* gauge: last PLCA_CTRL0.EN (t1s, read while TX is stalled) */
     LAN865X_HWSTAT_NUM,
 };
+
+/* t1s-oaspi: the MAC statistics block MMS1 0x40..0x5A (t1s_oaspi.c
+ * t1s_oaspi_poll_stats), 32-bit saturating clear-on-read counters.  It
+ * replaces the LAN865x hardware counters (LAN865X_HW_*) in ethtool -S;
+ * the driver counters (LAN865X_SW_*) are shown for both chips.
+ */
+#define LAN865X_T1S_NSTATS 27
 
 int lan865x_health_init(struct lan865x_priv* priv);
 void lan865x_health_start(struct lan865x_priv* priv);

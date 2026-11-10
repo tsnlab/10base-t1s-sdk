@@ -18,8 +18,9 @@
  *   TI/TISUBN/TSH/TSL/TN/TA 0x77/0x6F/0x70/0x74/0x75/0x76 (PTP, TS build)
  *                                -> PTP_* 0x20..0x2A (command model), own
  *                                   PHC in t1s_ptp.c (TIMESTAMP=0 build)
- *   STATS0..12 0x208..0x214, BMGR_CTL 0x200 -> none (statistics 0x40..0x59,
- *                                   not polled; address >= 0x100 not used)
+ *   STATS0..12 0x208..0x214, BMGR_CTL 0x200 -> statistics 0x40..0x5A
+ *                                   (t1s_oaspi_poll_stats; 802.3 30.3.1.1
+ *                                   names, 32 bit; address >= 0x100 not used)
  * LAN865x MMS4 vendor writes (AN1760 trims 0x0040..0x00F9, CDCTL0 0x0087,
  * indirect 0x00D8..0x00DA, STS1 0x0018) are not sent: this PHY keeps its
  * collision detect control in 31.D106 (reset value = product default).
@@ -261,6 +262,61 @@ ssize_t t1s_oaspi_regdump(struct lan865x_priv* priv, char* buf) {
         }
     }
     return t1s_ptp_stats(priv, buf, n);
+}
+
+/* ------------------------------------------------------------- statistics */
+
+/* ethtool -S names of MMS1 0x40..0x5A, in address order (802.3 30.3.1.1
+ * attribute in brackets where there is one)
+ */
+const char t1s_oaspi_stat_names[LAN865X_T1S_NSTATS][32] = {
+    "mac_tx_frames_ok",               /* 0x40 aFramesTransmittedOK */
+    "mac_tx_single_collision_frames", /* 0x41 aSingleCollisionFrames */
+    "mac_tx_multi_collision_frames",  /* 0x42 aMultipleCollisionFrames */
+    "mac_tx_deferred_frames",         /* 0x43 aFramesWithDeferredXmissions */
+    "mac_tx_late_collisions",         /* 0x44 aLateCollisions */
+    "mac_tx_excessive_collisions",    /* 0x45 aFramesAbortedDueToXSColls */
+    "mac_tx_internal_mac_errors",     /* 0x46 aFramesLostDueToIntMACXmitError */
+    "mac_tx_excessive_deferral",      /* 0x47 aFramesWithExcessiveDeferral */
+    "mac_tx_collisions",              /* 0x48 collisions seen while sending */
+    "mac_rx_frames_ok",               /* 0x49 aFramesReceivedOK */
+    "mac_rx_octets_ok",               /* 0x4A aOctetsReceivedOK */
+    "mac_rx_fcs_errors",              /* 0x4B aFrameCheckSequenceErrors */
+    "mac_rx_alignment_errors",        /* 0x4C aAlignmentErrors */
+    "mac_rx_frame_too_long",          /* 0x4D aFrameTooLongErrors */
+    "mac_rx_multicast_frames",        /* 0x4E aMulticastFramesReceivedOK */
+    "mac_rx_broadcast_frames",        /* 0x4F aBroadcastFramesReceivedOK */
+    "mac_rx_internal_mac_errors",     /* 0x50 aFramesLostDueToIntMACRcvError */
+    "mac_rx_runt_frames",             /* 0x51 */
+    "mac_rx_filtered_frames",         /* 0x52 */
+    "mac_tx_octets_ok",               /* 0x53 aOctetsTransmittedOK */
+    "mac_tx_multicast_frames",        /* 0x54 aMulticastFramesXmittedOK */
+    "mac_tx_broadcast_frames",        /* 0x55 aBroadcastFramesXmittedOK */
+    "mac_carrier_sense_errors",       /* 0x56 aCarrierSenseErrors */
+    "mac_rx_in_range_length_errors",  /* 0x57 aInRangeLengthErrors */
+    "mac_rx_out_of_range_length",     /* 0x58 aOutOfRangeLengthField */
+    "phy_collisions",                 /* 0x59 physical collisions (PHY COL while sending) */
+    "mac_tx_frame_too_long",          /* 0x5A host TX frames dropped for length */
+};
+
+/* Read and accumulate the clear-on-read statistics.  Called with hw_lock. */
+void t1s_oaspi_poll_stats(struct lan865x_priv* priv) {
+    u32 st[LAN865X_T1S_NSTATS];
+    int ret;
+
+    ret = oa_tc6_read_registers(priv->tc6, T1S_MMS1_STAT0, st, LAN865X_T1S_NSTATS);
+    spin_lock_bh(&priv->stats_lock);
+    if (ret) {
+        priv->hwstats[LAN865X_SW_POLL_ERRORS]++;
+    } else {
+        for (int i = 0; i < LAN865X_T1S_NSTATS; i++) {
+            priv->t1s_stats[i] += st[i];
+            if (st[i] == 0xFFFFFFFFu) {
+                priv->hwstats[LAN865X_SW_SATURATED]++;
+            }
+        }
+    }
+    spin_unlock_bh(&priv->stats_lock);
 }
 
 /* ---------------------------------------------------------------- variant */

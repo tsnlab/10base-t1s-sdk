@@ -272,6 +272,17 @@ static const char* const lan865x_rcv_reason_str[] = {
 #define LAN865X_MMS4_CDCTL0 0x00040087
 #define LAN865X_TXC_MAX 0x30 /* OA_BUFSTS.TXC reset value: 48 chunks */
 
+/* Read and accumulate the chip's clear-on-read counters, the block of this
+ * MAC-PHY.  Called with hw_lock.
+ */
+static void lan865x_poll_chip_stats(struct lan865x_priv* priv) {
+    if (T1S_IS(priv)) {
+        t1s_oaspi_poll_stats(priv); /* t1s-oaspi MMS1 0x40..0x5A */
+    } else {
+        lan865x_poll_hw_stats(priv); /* LAN865x MMS1 STATS / MMS4 STS1 */
+    }
+}
+
 static void lan865x_trigger_recovery(struct lan865x_priv* priv, int reason) {
     unsigned int delay = 0;
 
@@ -527,7 +538,7 @@ static void lan865x_rcv_work(struct work_struct* work) {
         goto out;
     }
 
-    lan865x_poll_hw_stats(priv); /* keep the counts the reset would clear */
+    lan865x_poll_chip_stats(priv); /* keep the counts the reset would clear */
     lan865x_dump_state(priv, "before recovery");
 
     if (recovery_mode == 0) {
@@ -691,9 +702,7 @@ static void lan865x_mon_work(struct work_struct* work) {
     struct lan865x_priv* priv = container_of(to_delayed_work(work), struct lan865x_priv, mon_work);
 
     mutex_lock(&priv->hw_lock);
-    if (!T1S_IS(priv)) {
-        lan865x_poll_hw_stats(priv); /* LAN865x MMS1 STATS / MMS4 STS1 */
-    }
+    lan865x_poll_chip_stats(priv);
     lan865x_check_tx(priv);
     if (!T1S_IS(priv) && !test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags)) {
         lan865x_apply_cden(priv);
@@ -772,18 +781,39 @@ void lan865x_get_stats64(struct net_device* netdev, struct rtnl_link_stats64* s)
     spin_unlock_bh(&priv->stats_lock);
 }
 
+/* ethtool -S layout: chip counters (LAN865x: LAN865X_HW_*; t1s-oaspi: its
+ * own MAC statistics block), then the driver counters (LAN865X_SW_*), then
+ * the oa_tc6 counters
+ */
+#define LAN865X_SW_NUM (LAN865X_HWSTAT_NUM - LAN865X_SW_SATURATED)
+
 int lan865x_get_sset_count(struct net_device* netdev, int sset) {
+    struct lan865x_priv* priv = netdev_priv(netdev);
+
     if (sset != ETH_SS_STATS) {
         return -EOPNOTSUPP;
+    }
+    if (T1S_IS(priv)) {
+        return LAN865X_T1S_NSTATS + LAN865X_SW_NUM + OA_TC6_STAT_NUM;
     }
     return LAN865X_HWSTAT_NUM + OA_TC6_STAT_NUM;
 }
 
 void lan865x_get_strings(struct net_device* netdev, u32 sset, u8* data) {
+    struct lan865x_priv* priv = netdev_priv(netdev);
+    int first = 0;
+
     if (sset != ETH_SS_STATS) {
         return;
     }
-    for (int i = 0; i < LAN865X_HWSTAT_NUM; i++) {
+    if (T1S_IS(priv)) {
+        for (int i = 0; i < LAN865X_T1S_NSTATS; i++) {
+            strscpy(data, t1s_oaspi_stat_names[i], ETH_GSTRING_LEN);
+            data += ETH_GSTRING_LEN;
+        }
+        first = LAN865X_SW_SATURATED;
+    }
+    for (int i = first; i < LAN865X_HWSTAT_NUM; i++) {
         memcpy(data, lan865x_hwstat_names[i], ETH_GSTRING_LEN);
         data += ETH_GSTRING_LEN;
     }
@@ -797,9 +827,16 @@ void lan865x_get_ethtool_stats(struct net_device* netdev, struct ethtool_stats* 
     struct lan865x_priv* priv = netdev_priv(netdev);
 
     spin_lock_bh(&priv->stats_lock);
-    memcpy(data, priv->hwstats, sizeof(u64) * LAN865X_HWSTAT_NUM);
+    if (T1S_IS(priv)) {
+        memcpy(data, priv->t1s_stats, sizeof(u64) * LAN865X_T1S_NSTATS);
+        memcpy(data + LAN865X_T1S_NSTATS, &priv->hwstats[LAN865X_SW_SATURATED], sizeof(u64) * LAN865X_SW_NUM);
+        data += LAN865X_T1S_NSTATS + LAN865X_SW_NUM;
+    } else {
+        memcpy(data, priv->hwstats, sizeof(u64) * LAN865X_HWSTAT_NUM);
+        data += LAN865X_HWSTAT_NUM;
+    }
     spin_unlock_bh(&priv->stats_lock);
-    oa_tc6_get_stats(priv->tc6, data + LAN865X_HWSTAT_NUM);
+    oa_tc6_get_stats(priv->tc6, data);
 }
 
 /* ------------------------------------------------------------------------
