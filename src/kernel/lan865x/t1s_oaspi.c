@@ -272,7 +272,7 @@ ssize_t t1s_oaspi_regdump(struct lan865x_priv* priv, char* buf) {
 const char t1s_oaspi_stat_names[LAN865X_T1S_NSTATS][32] = {
     "mac_tx_frames_ok",               /* 0x40 aFramesTransmittedOK */
     "mac_tx_single_collision_frames", /* 0x41 aSingleCollisionFrames */
-    "mac_tx_multiple_collision_frames", /* 0x42 aMultipleCollisionFrames */
+    "mac_tx_multi_collision_frames",  /* 0x42 aMultipleCollisionFrames */
     "mac_tx_deferred_frames",         /* 0x43 aFramesWithDeferredXmissions */
     "mac_tx_late_collisions",         /* 0x44 aLateCollisions */
     "mac_tx_excessive_collisions",    /* 0x45 aFramesAbortedDueToXSColls */

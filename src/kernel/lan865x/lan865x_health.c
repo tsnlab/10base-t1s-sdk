@@ -272,6 +272,17 @@ static const char* const lan865x_rcv_reason_str[] = {
 #define LAN865X_MMS4_CDCTL0 0x00040087
 #define LAN865X_TXC_MAX 0x30 /* OA_BUFSTS.TXC reset value: 48 chunks */
 
+/* Read and accumulate the chip's clear-on-read counters, the block of this
+ * MAC-PHY.  Called with hw_lock.
+ */
+static void lan865x_poll_chip_stats(struct lan865x_priv* priv) {
+    if (T1S_IS(priv)) {
+        t1s_oaspi_poll_stats(priv); /* t1s-oaspi MMS1 0x40..0x5A */
+    } else {
+        lan865x_poll_hw_stats(priv); /* LAN865x MMS1 STATS / MMS4 STS1 */
+    }
+}
+
 static void lan865x_trigger_recovery(struct lan865x_priv* priv, int reason) {
     unsigned int delay = 0;
 
@@ -527,7 +538,7 @@ static void lan865x_rcv_work(struct work_struct* work) {
         goto out;
     }
 
-    lan865x_poll_hw_stats(priv); /* keep the counts the reset would clear */
+    lan865x_poll_chip_stats(priv); /* keep the counts the reset would clear */
     lan865x_dump_state(priv, "before recovery");
 
     if (recovery_mode == 0) {
@@ -691,11 +702,7 @@ static void lan865x_mon_work(struct work_struct* work) {
     struct lan865x_priv* priv = container_of(to_delayed_work(work), struct lan865x_priv, mon_work);
 
     mutex_lock(&priv->hw_lock);
-    if (T1S_IS(priv)) {
-        t1s_oaspi_poll_stats(priv); /* t1s-oaspi MMS1 0x40..0x5A */
-    } else {
-        lan865x_poll_hw_stats(priv); /* LAN865x MMS1 STATS / MMS4 STS1 */
-    }
+    lan865x_poll_chip_stats(priv);
     lan865x_check_tx(priv);
     if (!T1S_IS(priv) && !test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags)) {
         lan865x_apply_cden(priv);

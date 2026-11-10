@@ -49,8 +49,8 @@ int t1s_oaspi_mac_enable(struct lan865x_priv* priv, bool en);
 void t1s_oaspi_set_rx_mode(struct lan865x_priv* priv);
 ssize_t t1s_oaspi_regdump(struct lan865x_priv* priv, char* buf);
 
-/* MAC statistics MMS1 0x40..0x5A (statistics 0..26, t1s repo
- * docs/datasheet/registers.md), read and accumulated by the monitor work
+/* MAC statistics MMS1 0x40..0x5A (statistics 0..26 of the chip register
+ * map), read and accumulated by the monitor work
  */
 #define T1S_MMS1_STAT0 0x00010040
 extern const char t1s_oaspi_stat_names[][32];

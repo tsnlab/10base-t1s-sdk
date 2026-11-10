@@ -57,7 +57,7 @@ enum lan865x_hwstat_id {
     LAN865X_HW_STS1_ESDERR,
     LAN865X_HW_STS1_DEC5B,
     /* driver */
-    LAN865X_SW_SATURATED,   /* polls where an 8-bit chip counter was 0xFF */
+    LAN865X_SW_SATURATED,   /* polls where a chip counter was saturated (LAN865x 8-bit 0xFF, t1s-oaspi 32-bit) */
     LAN865X_SW_POLL_ERRORS, /* SPI errors while polling */
     /* TX stall detection / recovery */
     LAN865X_SW_STALL_DETECTED,  /* TXC 0 + no TX progress for tx_stall_ms */
