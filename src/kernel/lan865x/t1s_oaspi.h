@@ -53,6 +53,10 @@ ssize_t t1s_oaspi_regdump(struct lan865x_priv* priv, char* buf);
  * map), read and accumulated by the monitor work
  */
 #define T1S_MMS1_STAT0 0x00010040
+/* indices into priv->t1s_stats used by the TX stall / replay checks */
+#define T1S_STAT_TX_OK 0     /* 0x40 aFramesTransmittedOK */
+#define T1S_STAT_TX_XSCOL 5  /* 0x45 aFramesAbortedDueToXSColls */
+#define T1S_STAT_TX_INTERR 6 /* 0x46 aFramesLostDueToIntMACXmitError */
 extern const char t1s_oaspi_stat_names[][32];
 void t1s_oaspi_poll_stats(struct lan865x_priv* priv);
 
