@@ -34,7 +34,7 @@ struct lan865x_priv;
 
 int t1s_hat_fxl6408_init(struct lan865x_priv* priv, struct device* dev);
 void t1s_hat_fxl6408_exit(struct lan865x_priv* priv);
-u8 t1s_hat_fxl6408_read_reg(struct lan865x_priv* priv, u8 reg);
+int t1s_hat_fxl6408_read_reg(struct lan865x_priv* priv, u8 reg); /* value 0..255 or -errno */
 void t1s_hat_fxl6408_write_reg(struct lan865x_priv* priv, u8 reg, u8 buf);
 
 #endif
