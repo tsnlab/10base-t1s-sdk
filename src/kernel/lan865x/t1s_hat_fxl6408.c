@@ -56,7 +56,7 @@ int t1s_hat_fxl6408_read_reg(struct lan865x_priv* priv, u8 reg) {
         if (ret >= 0) {
             ret = -EIO;
         }
-        pr_err("t1s_hat_fxl6408: i2c_transfer failed (ret=%d)\n", ret);
+        pr_err_ratelimited("t1s_hat_fxl6408: i2c_transfer failed (ret=%d)\n", ret);
         return ret;
     }
 
@@ -143,7 +143,8 @@ static irqreturn_t t1s_hat_fxl6408_isr(int irq, void* data) {
     return IRQ_HANDLED;
 }
 
-static void init_registers(struct lan865x_priv* priv) {
+/* Returns 0, or a negative errno when the expander does not answer. */
+static int init_registers(struct lan865x_priv* priv) {
     struct fxl6408_device_id_ctrl {
         u8 SW_RST : 1;
         u8 RST_INT : 1;
@@ -156,18 +157,22 @@ static void init_registers(struct lan865x_priv* priv) {
     if (ret < 0) {
         /* no expander answering: do not write a reset built from a failed read */
         pr_warn("t1s_hat_fxl6408: device id read failed (%d), FXL6408 not set up\n", ret);
-        return;
+        return ret;
     }
     *(u8*)&ctrl = (u8)ret;
     if (ctrl.MF != FXL6408_MF) {
         pr_warn("t1s_hat_fxl6408: Manufacturer=0x%02x\n", ctrl.MF);
     }
     ctrl.SW_RST = 1;
-    t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INPUT_DEFAULT, 0x00);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_DEVICE_ID_CTRL, *(u8*)&ctrl);
+    /* after the software reset, which would restore the defaults */
+    t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INPUT_DEFAULT, 0x00);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_IO_DIRECTION, 0x03);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_OUTPUT_HIGH_Z, 0x00);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INTERRUPT_MASK, 0x00);
+    /* reading DEVICE_ID_CTRL clears RST_INT, set by the software reset */
+    t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_DEVICE_ID_CTRL);
+    return 0;
 }
 
 static int init_interrupt(struct lan865x_priv* priv, struct device* dev) {
@@ -238,7 +243,13 @@ int t1s_hat_fxl6408_init(struct lan865x_priv* priv, struct device* dev) {
         return -1;
     }
 
-    init_registers(priv);
+    if (init_registers(priv) < 0) {
+        /* no expander: no IRQ (a floating INT line would only log read errors),
+         * no node ID thread; probe keeps the DT node id
+         */
+        pr_warn("t1s_hat_fxl6408: no FXL6408, DIP switch and LED not used\n");
+        return 0;
+    }
     ret = init_interrupt(priv, dev);
     if (ret < 0) {
         pr_err("t1s_hat_fxl6408: failed to initialize interrupt\n");
