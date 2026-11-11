@@ -44,9 +44,14 @@
 #include "lan865x_variant.h"
 
 /* TC6 MMS0 (OPEN Alliance TC6 v1.1 9.2) */
+#define T1S_TC6_STDCAP 0x00000002
+#define T1S_TC6_STDCAP_TXFCSVC BIT(10) /* transmit FCS validation capability (Table 10) */
 #define T1S_TC6_CONFIG0 0x00000004
+#define T1S_TC6_CONFIG0_TXFCSVE BIT(14) /* transmit FCS validation enable */
 #define T1S_TC6_CONFIG0_ZARFE BIT(12)
 #define T1S_TC6_STATUS0 0x00000008
+#define T1S_TC6_IMASK0 0x0000000C
+#define T1S_TC6_IMASK0_TXFCSEM BIT(11) /* STATUS0.TXFCSE mask */
 
 /* standard PLCA (OA PLCA management registers, MMS4 = MMD 31) */
 #define T1S_MMS4_PLCA_CTRL0 0x0004CA01
@@ -58,12 +63,66 @@ static unsigned int t1s_spi_hz;
 module_param(t1s_spi_hz, uint, 0444);
 MODULE_PARM_DESC(t1s_spi_hz, "t1s-oaspi: SPI clock in Hz (0 = DT spi-max-frequency, else 12.5 MHz)");
 
+/* Transmit FCS validation (TC6 v1.1 CONFIG0.TXFCSVE): the host pads every
+ * frame to 60 bytes and appends the FCS, the MAC-PHY checks it and reports a
+ * bad one in STATUS0.TXFCSE (ethtool -S oa_tx_fcs_errors, kernel log).  Only
+ * when the MAC-PHY has STDCAP.TXFCSVC = 1, and only in the TIMESTAMP=0 build
+ * (t1s_oaspi_xmit() is the transmit path that appends the FCS).
+ */
+static unsigned int t1s_txfcs;
+module_param(t1s_txfcs, uint, 0444);
+MODULE_PARM_DESC(t1s_txfcs, "t1s-oaspi: 1 = host appends the TX FCS and the MAC-PHY checks it (CONFIG0.TXFCSVE, needs STDCAP.TXFCSVC); "
+                            "also ethtool --set-priv-flags <if> tx-fcs-check on|off while the interface is down. Default 0");
+
+#ifndef FRAME_TIMESTAMP_ENABLE
+#define T1S_TXFCS_BUILD true
+#else
+#define T1S_TXFCS_BUILD false
+#endif
+
+/* CONFIG0.TXFCSVE and the STATUS0.TXFCSE interrupt mask for priv->t1s_txfcs_req.
+ * *config0 is the CONFIG0 value to write (TXFCSVE set or cleared here).
+ */
+static int t1s_txfcs_setup(struct oa_tc6* tc6, struct lan865x_priv* priv, u32* config0) {
+    u32 cap, imask;
+    bool on;
+    int ret;
+
+    ret = oa_tc6_read_register(tc6, T1S_TC6_STDCAP, &cap);
+    if (ret) {
+        return ret;
+    }
+    on = priv->t1s_txfcs_req && T1S_TXFCS_BUILD && (cap & T1S_TC6_STDCAP_TXFCSVC);
+    if (priv->t1s_txfcs_req && !on) {
+        dev_warn(&priv->spi->dev, "t1s-oaspi: TX FCS check not available (STDCAP 0x%08x, TXFCSVC %u%s), host FCS off\n", cap,
+                 !!(cap & T1S_TC6_STDCAP_TXFCSVC), T1S_TXFCS_BUILD ? "" : ", TIMESTAMP=1 build");
+    }
+
+    ret = oa_tc6_read_register(tc6, T1S_TC6_IMASK0, &imask);
+    if (ret) {
+        return ret;
+    }
+    imask = on ? (imask & ~T1S_TC6_IMASK0_TXFCSEM) : (imask | T1S_TC6_IMASK0_TXFCSEM);
+    ret = oa_tc6_write_register(tc6, T1S_TC6_IMASK0, imask);
+    if (ret) {
+        return ret;
+    }
+
+    *config0 = on ? (*config0 | T1S_TC6_CONFIG0_TXFCSVE) : (*config0 & ~T1S_TC6_CONFIG0_TXFCSVE);
+    if (on != READ_ONCE(priv->t1s_txfcs)) {
+        dev_info(&priv->spi->dev, "t1s-oaspi: TX FCS check %s (CONFIG0.TXFCSVE)\n", on ? "on, host appends the FCS" : "off");
+    }
+    WRITE_ONCE(priv->t1s_txfcs, on);
+    return 0;
+}
+
 int t1s_oaspi_probe_cfg(struct lan865x_priv* priv, struct spi_device* spi) {
     u32 v = T1S_DEF_NODE_ID;
     u32 hz;
 
     of_property_read_u32(spi->dev.of_node, "tsnlab,plca-node-id", &v);
     priv->node_id = v & 0xFF;
+    priv->t1s_txfcs_req = !!t1s_txfcs;
 
     /* TC6 v1.1 7.1: SPI mode 0 (CPOL 0, CPHA 0) */
     hz = t1s_spi_hz ? t1s_spi_hz : (spi->max_speed_hz ? spi->max_speed_hz : T1S_DEF_SPI_HZ);
@@ -161,6 +220,11 @@ int t1s_oaspi_chip_init(struct oa_tc6* tc6) {
      * STDCAP.FTSC = 1 CONFIG0.FTSE / FTSS are an alias of it), see t1s_ptp.c
      */
     ret = oa_tc6_read_register(tc6, T1S_TC6_CONFIG0, &v);
+    if (ret) {
+        return ret;
+    }
+    /* CONFIG0.TXFCSVE before SYNC too (TC6 v1.1 7.6), and IMASK0.TXFCSEM */
+    ret = t1s_txfcs_setup(tc6, priv, &v);
     if (ret) {
         return ret;
     }
@@ -331,9 +395,43 @@ static const struct oa_tc6_chip_ops t1s_oaspi_tc6_ops = {
 };
 
 #ifndef FRAME_TIMESTAMP_ENABLE
+/* CONFIG0.TXFCSVE = 1: pad to the minimum frame (60 bytes without FCS, as the
+ * MAC does when it adds the FCS itself) and append the FCS (802.3 3.2.9:
+ * CRC-32, complemented, least significant byte first).  Returns 0, or -ENOMEM
+ * with the skb untouched.
+ */
+static int t1s_txfcs_append(struct sk_buff* skb) {
+    unsigned int pad = skb->len < ETH_ZLEN ? ETH_ZLEN - skb->len : 0;
+    __le32 fcs;
+
+    if (skb_linearize(skb)) {
+        return -ENOMEM;
+    }
+    if (skb_cloned(skb) || skb_tailroom(skb) < pad + ETH_FCS_LEN) {
+        if (pskb_expand_head(skb, 0, pad + ETH_FCS_LEN, GFP_ATOMIC)) {
+            return -ENOMEM;
+        }
+    }
+    if (pad) {
+        skb_put_zero(skb, pad);
+    }
+    fcs = cpu_to_le32(~crc32_le(~0, skb->data, skb->len));
+    skb_put_data(skb, &fcs, ETH_FCS_LEN);
+    return 0;
+}
+
 static netdev_tx_t t1s_oaspi_xmit(struct lan865x_priv* priv, struct sk_buff* skb) {
-    u8 tsc = t1s_ptp_tx_request(priv, skb);
+    unsigned int len0 = skb->len;
+    bool fcs = READ_ONCE(priv->t1s_txfcs);
     netdev_tx_t rc;
+    u8 tsc;
+
+    if (fcs && t1s_txfcs_append(skb)) {
+        priv->netdev->stats.tx_dropped++;
+        dev_kfree_skb_any(skb);
+        return NETDEV_TX_OK;
+    }
+    tsc = t1s_ptp_tx_request(priv, skb);
 
     /* Software TX timestamp (SOF_TIMESTAMPING_TX_SOFTWARE) only for a
      * frame that was queued: on NETDEV_TX_BUSY the stack sends the same
@@ -345,6 +443,10 @@ static netdev_tx_t t1s_oaspi_xmit(struct lan865x_priv* priv, struct sk_buff* skb
     rc = oa_tc6_start_xmit_tsc(priv->tc6, skb, tsc);
     if (rc == NETDEV_TX_BUSY) {
         t1s_ptp_tx_cancel(priv, tsc);
+        /* the stack sends the same skb again: no second pad / FCS */
+        if (fcs) {
+            skb_trim(skb, len0);
+        }
     } else {
         skb_tx_timestamp(skb);
     }
@@ -359,13 +461,78 @@ static int t1s_ethtool_get_ts_info(struct net_device* netdev, LAN865X_TS_INFO* t
     return t1s_ptp_get_ts_info(netdev_priv(netdev), ts_info);
 }
 
+/* ethtool private flag "tx-fcs-check" = CONFIG0.TXFCSVE (host appends the
+ * FCS).  Changed only while the interface is down: no frame is in flight
+ * when CONFIG0 changes (SYNC stays set, it is set-only).  A recovery reset
+ * applies the last setting again (t1s_oaspi_chip_init()).
+ */
+static const char t1s_priv_flag_names[][ETH_GSTRING_LEN] = {"tx-fcs-check"};
+#define T1S_PRIV_FLAG_TXFCS BIT(0)
+
+static int t1s_ethtool_get_sset_count(struct net_device* netdev, int sset) {
+    if (sset == ETH_SS_PRIV_FLAGS) {
+        return ARRAY_SIZE(t1s_priv_flag_names);
+    }
+    return lan865x_get_sset_count(netdev, sset);
+}
+
+static void t1s_ethtool_get_strings(struct net_device* netdev, u32 sset, u8* data) {
+    if (sset == ETH_SS_PRIV_FLAGS) {
+        memcpy(data, t1s_priv_flag_names, sizeof(t1s_priv_flag_names));
+        return;
+    }
+    lan865x_get_strings(netdev, sset, data);
+}
+
+static u32 t1s_ethtool_get_priv_flags(struct net_device* netdev) {
+    struct lan865x_priv* priv = netdev_priv(netdev);
+
+    return READ_ONCE(priv->t1s_txfcs) ? T1S_PRIV_FLAG_TXFCS : 0;
+}
+
+static int t1s_ethtool_set_priv_flags(struct net_device* netdev, u32 flags) {
+    struct lan865x_priv* priv = netdev_priv(netdev);
+    bool want = flags & T1S_PRIV_FLAG_TXFCS;
+    bool old_req = priv->t1s_txfcs_req;
+    u32 v;
+    int ret;
+
+    if (want == READ_ONCE(priv->t1s_txfcs) && want == old_req) {
+        return 0;
+    }
+    if (netif_running(netdev)) {
+        netdev_err(netdev, "t1s-oaspi: tx-fcs-check can only be changed while the interface is down\n");
+        return -EBUSY;
+    }
+
+    mutex_lock(&priv->hw_lock);
+    priv->t1s_txfcs_req = want;
+    ret = oa_tc6_read_register(priv->tc6, T1S_TC6_CONFIG0, &v);
+    if (!ret) {
+        ret = t1s_txfcs_setup(priv->tc6, priv, &v);
+    }
+    if (!ret) {
+        ret = oa_tc6_write_register(priv->tc6, T1S_TC6_CONFIG0, v);
+    }
+    if (!ret && want && !READ_ONCE(priv->t1s_txfcs)) {
+        ret = -EOPNOTSUPP; /* no STDCAP.TXFCSVC (logged by t1s_txfcs_setup()) */
+    }
+    if (ret) {
+        priv->t1s_txfcs_req = old_req && READ_ONCE(priv->t1s_txfcs);
+    }
+    mutex_unlock(&priv->hw_lock);
+    return ret;
+}
+
 static const struct ethtool_ops t1s_ethtool_ops = {
     .get_link_ksettings = phy_ethtool_get_link_ksettings,
     .set_link_ksettings = phy_ethtool_set_link_ksettings,
     .get_ts_info = t1s_ethtool_get_ts_info,
-    .get_sset_count = lan865x_get_sset_count,
-    .get_strings = lan865x_get_strings,
+    .get_sset_count = t1s_ethtool_get_sset_count,
+    .get_strings = t1s_ethtool_get_strings,
     .get_ethtool_stats = lan865x_get_ethtool_stats,
+    .get_priv_flags = t1s_ethtool_get_priv_flags,
+    .set_priv_flags = t1s_ethtool_set_priv_flags,
 };
 #endif /* FRAME_TIMESTAMP_ENABLE */
 

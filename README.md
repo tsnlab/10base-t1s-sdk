@@ -163,6 +163,18 @@ $ sudo i2cget -y 1 0x43 0x0f
 12.5 MHz is enough for the 10 Mb/s line: with 64-byte chunks the SPI carries 12.5 MHz x 64 / 68 = 11.8 Mb/s of frame data in each
 direction (full duplex SPI), more than the 10 Mb/s of the line. 25 MHz gives more margin for control traffic and timestamps.
 
+### Transmit FCS check (t1s-oaspi)
+
+With `CONFIG0.TXFCSVE` (OPEN Alliance TC6 v1.1) the host appends the FCS to every transmitted frame and the MAC-PHY checks it, so a
+frame corrupted between the host and the MAC-PHY is not sent with a newly computed (good) FCS. Off by default.
+
+- Turn it on at load time with the module parameter `t1s_txfcs=1`, or later with `ethtool --set-priv-flags <if> tx-fcs-check on`
+  (`off` to turn it off; only while the interface is down). `ethtool --show-priv-flags <if>` shows the state.
+- Only when the MAC-PHY reports `STDCAP.TXFCSVC = 1`; otherwise the driver logs a warning and keeps it off (ethtool returns
+  `EOPNOTSUPP`). Only in the `TIMESTAMP=0` build.
+- When on, the driver pads short frames to 60 bytes and appends the CRC-32 FCS. A frame the MAC-PHY finds with a bad FCS sets
+  `STATUS0.TXFCSE`: counted in `ethtool -S <if>` as `oa_tx_fcs_errors` and logged (rate limited).
+
 # 5. Clean
 
 ```bash
