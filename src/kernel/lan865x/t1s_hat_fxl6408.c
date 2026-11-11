@@ -28,7 +28,8 @@ static DEFINE_SEMAPHORE(nodeid_irq_sem, 0);
 
 static atomic_t nodeid_irq_flag = ATOMIC_INIT(0);
 
-u8 t1s_hat_fxl6408_read_reg(struct lan865x_priv* priv, u8 reg) {
+/* Returns the register value (0..255) or a negative errno. */
+int t1s_hat_fxl6408_read_reg(struct lan865x_priv* priv, u8 reg) {
     struct i2c_msg msgs[2];
     u8 val = 0;
     int ret;
@@ -49,13 +50,15 @@ u8 t1s_hat_fxl6408_read_reg(struct lan865x_priv* priv, u8 reg) {
     msgs[1].buf = &val;
 
     mutex_lock(&priv->fxl6408_lock);
-    ret = i2c_transfer(priv->fxl6408_client->adapter, msgs, sizeof(msgs) / sizeof(struct i2c_msg));
-    if (ret < 0) {
+    ret = i2c_transfer(priv->fxl6408_client->adapter, msgs, ARRAY_SIZE(msgs));
+    mutex_unlock(&priv->fxl6408_lock);
+    if (ret != ARRAY_SIZE(msgs)) {
+        if (ret >= 0) {
+            ret = -EIO;
+        }
         pr_err("t1s_hat_fxl6408: i2c_transfer failed (ret=%d)\n", ret);
-        mutex_unlock(&priv->fxl6408_lock);
         return ret;
     }
-    mutex_unlock(&priv->fxl6408_lock);
 
     return val;
 }
@@ -95,7 +98,7 @@ void t1s_hat_fxl6408_write_reg(struct lan865x_priv* priv, u8 reg, u8 val) {
 static int get_nodeid(void* data) {
     struct lan865x_priv* priv = (struct lan865x_priv*)data;
     int ret;
-    u8 val;
+    int val;
 
     while (1) {
         ret = down_interruptible(&nodeid_irq_sem);
@@ -112,8 +115,8 @@ static int get_nodeid(void* data) {
         /* Read input status register */
         val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
 
-        /* If button is pressed, set node_id to LAN8650 */
-        if (val & FXL6408_BUTTON_INPUT_MASK) {
+        /* If button is pressed, set node_id to LAN8650 (not on a read error) */
+        if (val >= 0 && (val & FXL6408_BUTTON_INPUT_MASK)) {
             priv->node_id = (val & 0xF0) >> 4;
             pr_debug("t1s_hat_fxl6408: node_id = 0x%02x\n", priv->node_id);
             lan865x_set_nodeid(priv, priv->node_id);
@@ -147,10 +150,15 @@ static void init_registers(struct lan865x_priv* priv) {
         u8 FW_rev : 3; // Firmware version
         u8 MF : 3;     // Manufacturer
     } ctrl;
-    u8 ret;
+    int ret;
 
     ret = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_DEVICE_ID_CTRL);
-    *(u8*)&ctrl = ret;
+    if (ret < 0) {
+        /* no expander answering: do not write a reset built from a failed read */
+        pr_warn("t1s_hat_fxl6408: device id read failed (%d), FXL6408 not set up\n", ret);
+        return;
+    }
+    *(u8*)&ctrl = (u8)ret;
     if (ctrl.MF != FXL6408_MF) {
         pr_warn("t1s_hat_fxl6408: Manufacturer=0x%02x\n", ctrl.MF);
     }
@@ -160,7 +168,6 @@ static void init_registers(struct lan865x_priv* priv) {
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_IO_DIRECTION, 0x03);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_OUTPUT_HIGH_Z, 0x00);
     t1s_hat_fxl6408_write_reg(priv, FXL6408_REG_INTERRUPT_MASK, 0x00);
-    ret = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_DEVICE_ID_CTRL);
 }
 
 static int init_interrupt(struct lan865x_priv* priv, struct device* dev) {

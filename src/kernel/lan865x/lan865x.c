@@ -699,24 +699,30 @@ static void get_defined_mac(struct device *dev, struct lan865x_priv *priv, u8 *m
 #endif
     }
 
-    u8 node_id;
+    int node_id; /* < 0: no DIP switch reading */
 
     if (!priv->variant->board_hat) {
         /* no FXL6408 / DIP switch: node id from probe_cfg (DT) */
         node_id = priv->node_id;
     } else {
         /* Read input status register */
-        u8 val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
+        int val = t1s_hat_fxl6408_read_reg(priv, FXL6408_REG_INPUT_STATUS);
 
-        node_id = (val & 0xF0) >> 4;
-        priv->node_id = node_id;
+        if (val < 0) {
+            /* keep the node id from probe_cfg (DT) and the base MAC */
+            dev_warn(dev, "DIP switch read failed (%d), keeping node id %u\n", val, priv->node_id);
+            node_id = val;
+        } else {
+            node_id = (val & 0xF0) >> 4;
+            priv->node_id = node_id;
+        }
     }
     /* mac_in_chip_init (t1s): written by the chip_init step before
      * CONFIG0.SYNC (TC6 7.6); this runs before oa_tc6_init_ops() there,
      * without SPI access.
      */
     if (!priv->variant->mac_in_chip_init) {
-        lan865x_set_nodeid(priv, node_id);
+        lan865x_set_nodeid(priv, priv->node_id);
     }
 
 #ifdef ENABLE_DIPSWITCH
