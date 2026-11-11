@@ -198,12 +198,15 @@ static void lan865x_poll_hw_stats(struct lan865x_priv* priv) {
  *             0 and the chip's TFTX ("frames attempted, incl. errors") has
  *             not moved for tx_stall_ms.  A merely congested segment keeps
  *             TFTX moving (every frame ends either sent or as XCOL).
- *  - held:    no TX skb is pending, but OA_BUFSTS.TXC stays below the full
- *             count (frames still in the MAC-PHY) and TFTX has not moved for
- *             tx_stall_ms.  Without it a stall with nothing more to send
- *             (e.g. ARP got no reply, so the stack queues nothing) was only
- *             seen at the next ARP retry.  The timer runs on across both
- *             cases while TFTX does not move.
+ *  - held:    (t1s-oaspi only) no TX skb is pending, but OA_BUFSTS.TXC
+ *             stays below the full count (frames still in the MAC-PHY) and
+ *             TFTX has not moved for tx_stall_ms.  Without it a stall with
+ *             nothing more to send (e.g. ARP got no reply, so the stack
+ *             queues nothing) was only seen at the next ARP retry.  The
+ *             timer runs on across both cases while TFTX does not move.
+ *             t1s only because the PLCA wait gate below is: a LAN865x with
+ *             no transmit opportunity and one frame left would otherwise
+ *             be reset again and again.
  *  - replay:  the chip's FTX (frames sent OK) since the last (re)start
  *             exceeds the frames the host handed over by more than
  *             replay_slack.  First stall: the chip re-sent 25 old frames
@@ -394,20 +397,23 @@ static void lan865x_rebaseline(struct lan865x_priv* priv) {
     priv->pst_ok_polls = 0;
 }
 
-/* No skb pending: can the MAC-PHY still hold frames?  Yes while the footer
- * TXC is below the full count, unless OA_BUFSTS already read full since the
- * host last handed over a frame (txc_idle_host).  The footer TXC is only
+/* No skb pending (t1s-oaspi only): can the MAC-PHY still hold frames?
+ * Suspected while the footer TXC is below the largest footer TXC seen,
+ * unless OA_BUFSTS already read full since the host last handed over a
+ * frame (txc_idle_host); OA_BUFSTS decides.  The footer TXC is only
  * refreshed by a data transfer, so after the last frame it can stay below
- * full on an idle link.  txc_full is the largest TXC seen (LAN865x 48,
- * t1s-oaspi its buffer size); 0 = not known yet, never suspect.
+ * full on an idle link.  The footer field (5 bits) saturates at 31 while
+ * OA_BUFSTS.TXC (8 bits) does not, so the two maxima are kept apart.
  */
 static bool lan865x_tx_held(struct lan865x_priv* priv, u16 txc) {
-    return priv->txc_full && txc < priv->txc_full && priv->netdev->stats.tx_packets != priv->txc_idle_host;
+    return T1S_IS(priv) && priv->txc_foot_max && txc < priv->txc_foot_max &&
+           priv->netdev->stats.tx_packets != priv->txc_idle_host;
 }
 
 /* Read OA_BUFSTS.TXC: 1 = full (TX buffer empty, nothing held; remembered
  * until the host hands over the next frame), 0 = frames held, < 0 = read
- * failed (unknown never detects).
+ * failed (unknown never detects).  Full = the largest OA_BUFSTS.TXC read;
+ * the first read only learns it.
  */
 static int lan865x_tx_buf_empty(struct lan865x_priv* priv) {
     u64 host = priv->netdev->stats.tx_packets; /* before the read: a frame handed over meanwhile stays suspect */
@@ -417,10 +423,10 @@ static int lan865x_tx_buf_empty(struct lan865x_priv* priv) {
         priv->hwstats[LAN865X_SW_POLL_ERRORS]++;
         return -EIO;
     }
-    if (txc < priv->txc_full) {
+    if (txc < priv->txc_buf_max) {
         return 0;
     }
-    priv->txc_full = txc;
+    priv->txc_buf_max = txc;
     priv->txc_idle_host = host;
     priv->stall_since = 0;
     priv->wait_since = 0;
@@ -462,8 +468,8 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
         return;
     }
 
-    if (st.tx_credits > priv->txc_full) {
-        priv->txc_full = st.tx_credits;
+    if (st.tx_credits > priv->txc_foot_max) {
+        priv->txc_foot_max = st.tx_credits;
     }
     held = !st.tx_pending && lan865x_tx_held(priv, st.tx_credits);
     if (st.tx_pending ? st.tx_credits : !held) {
