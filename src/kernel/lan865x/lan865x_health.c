@@ -198,6 +198,12 @@ static void lan865x_poll_hw_stats(struct lan865x_priv* priv) {
  *             0 and the chip's TFTX ("frames attempted, incl. errors") has
  *             not moved for tx_stall_ms.  A merely congested segment keeps
  *             TFTX moving (every frame ends either sent or as XCOL).
+ *  - held:    no TX skb is pending, but OA_BUFSTS.TXC stays below the full
+ *             count (frames still in the MAC-PHY) and TFTX has not moved for
+ *             tx_stall_ms.  Without it a stall with nothing more to send
+ *             (e.g. ARP got no reply, so the stack queues nothing) was only
+ *             seen at the next ARP retry.  The timer runs on across both
+ *             cases while TFTX does not move.
  *  - replay:  the chip's FTX (frames sent OK) since the last (re)start
  *             exceeds the frames the host handed over by more than
  *             replay_slack.  First stall: the chip re-sent 25 old frames
@@ -254,6 +260,7 @@ MODULE_PARM_DESC(replay_slack,
 
 enum lan865x_rcv_reason {
     LAN865X_RCV_STALL,
+    LAN865X_RCV_HELD,
     LAN865X_RCV_REPLAY,
     LAN865X_RCV_WATCHDOG,
     LAN865X_RCV_FATAL,
@@ -261,6 +268,7 @@ enum lan865x_rcv_reason {
 
 static const char* const lan865x_rcv_reason_str[] = {
     [LAN865X_RCV_STALL] = "TX stall (TXC=0, no TX progress)",
+    [LAN865X_RCV_HELD] = "TX stall (frames held in the MAC-PHY, no TX progress)",
     [LAN865X_RCV_REPLAY] = "TX replay (chip sent frames the host never gave it)",
     [LAN865X_RCV_WATCHDOG] = "netdev TX watchdog",
     [LAN865X_RCV_FATAL] = "fatal MAC-PHY error",
@@ -380,8 +388,43 @@ static void lan865x_rebaseline(struct lan865x_priv* priv) {
     lan865x_tx_counts(priv, &priv->replay_chip_base, &priv->replay_att_base);
     priv->stall_since = 0;
     priv->wait_since = 0;
+    priv->txc_idle_host = priv->netdev->stats.tx_packets; /* TX buffer empty after a (re)start */
+    priv->txc_checked = false;
     priv->cden_cur = -1; /* init_lan865x() set CDEN = 1; re-apply the policy */
     priv->pst_ok_polls = 0;
+}
+
+/* No skb pending: can the MAC-PHY still hold frames?  Yes while the footer
+ * TXC is below the full count, unless OA_BUFSTS already read full since the
+ * host last handed over a frame (txc_idle_host).  The footer TXC is only
+ * refreshed by a data transfer, so after the last frame it can stay below
+ * full on an idle link.  txc_full is the largest TXC seen (LAN865x 48,
+ * t1s-oaspi its buffer size); 0 = not known yet, never suspect.
+ */
+static bool lan865x_tx_held(struct lan865x_priv* priv, u16 txc) {
+    return priv->txc_full && txc < priv->txc_full && priv->netdev->stats.tx_packets != priv->txc_idle_host;
+}
+
+/* Read OA_BUFSTS.TXC: 1 = full (TX buffer empty, nothing held; remembered
+ * until the host hands over the next frame), 0 = frames held, < 0 = read
+ * failed (unknown never detects).
+ */
+static int lan865x_tx_buf_empty(struct lan865x_priv* priv) {
+    u64 host = priv->netdev->stats.tx_packets; /* before the read: a frame handed over meanwhile stays suspect */
+    u8 txc, rba;
+
+    if (oa_tc6_read_buffer_status(priv->tc6, &txc, &rba)) {
+        priv->hwstats[LAN865X_SW_POLL_ERRORS]++;
+        return -EIO;
+    }
+    if (txc < priv->txc_full) {
+        return 0;
+    }
+    priv->txc_full = txc;
+    priv->txc_idle_host = host;
+    priv->stall_since = 0;
+    priv->wait_since = 0;
+    return 1;
 }
 
 /* Called with hw_lock, right after a statistics poll. */
@@ -389,6 +432,7 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
     struct oa_tc6_tx_state st;
     u64 host, chip, att, prog;
     u8 txc, rba;
+    bool held;
 
     if (test_bit(LAN865X_RCV_PENDING, &priv->rcv_flags)) {
         return;
@@ -418,9 +462,14 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
         return;
     }
 
-    if (!st.tx_pending || st.tx_credits) {
+    if (st.tx_credits > priv->txc_full) {
+        priv->txc_full = st.tx_credits;
+    }
+    held = !st.tx_pending && lan865x_tx_held(priv, st.tx_credits);
+    if (st.tx_pending ? st.tx_credits : !held) {
         priv->stall_since = 0;
         priv->wait_since = 0;
+        priv->txc_checked = false;
         /* The PLCA gauges are only fresh while a stall is suspected: drop them, so a
          * later watchdog (e.g. credits > 0 but stuck) is never suppressed by an old
          * PST = 0 from an earlier episode.
@@ -429,6 +478,26 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
             priv->hwstats[LAN865X_SW_PLCA_EN] = 0;
         }
         return;
+    }
+
+    lan865x_tx_counts(priv, &chip, &prog);
+    if (held) {
+        /* No SPI access until TFTX has stood still for one poll (a busy link
+         * keeps it moving), then one OA_BUFSTS read per episode: an idle chip
+         * with a stale footer TXC ends here.
+         */
+        if (!priv->stall_since || prog != priv->stall_tftx) {
+            priv->stall_since = jiffies | 1;
+            priv->stall_tftx = prog;
+            priv->txc_checked = false;
+            return;
+        }
+        if (!priv->txc_checked) {
+            if (lan865x_tx_buf_empty(priv)) {
+                return;
+            }
+            priv->txc_checked = true;
+        }
     }
 
     if (T1S_IS(priv)) {
@@ -462,7 +531,6 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
      * saturated link (TXC 0 at every poll, pending skb) is not a stall
      * while it does.
      */
-    lan865x_tx_counts(priv, &chip, &prog);
     if (!priv->stall_since || prog != priv->stall_tftx) {
         /* first suspicion, or the chip is still finishing frames */
         priv->stall_since = jiffies | 1;
@@ -471,6 +539,16 @@ static void lan865x_check_tx(struct lan865x_priv* priv) {
     }
 
     if (time_before(jiffies, priv->stall_since + msecs_to_jiffies(tx_stall_ms))) {
+        return;
+    }
+
+    if (held) {
+        /* nothing to send, frames still in the MAC-PHY: no kick can help */
+        if (lan865x_tx_buf_empty(priv)) {
+            return;
+        }
+        priv->hwstats[LAN865X_SW_STALL_DETECTED]++;
+        lan865x_trigger_recovery(priv, LAN865X_RCV_HELD);
         return;
     }
 
