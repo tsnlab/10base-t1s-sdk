@@ -122,6 +122,7 @@ struct lan865x_priv {
     u8 chip;                               /* LAN865X_CHIP_* (t1s_oaspi.h), from the DT match */
     bool t1s_txfcs_req; /* t1s-oaspi: host FCS wanted (module parameter t1s_txfcs / ethtool priv flag) */
     bool t1s_txfcs;     /* t1s-oaspi: CONFIG0.TXFCSVE is on, t1s_oaspi_xmit() pads and appends the FCS */
+    bool t1s_rxfcs;     /* t1s-oaspi: MAC_RXCFG.RXFCSP reads 1, received frames end with the FCS (oa_tc6 strips it) */
     const struct lan865x_variant* variant; /* lan865x_variant.h */
 
     struct task_struct* plca_check_thread;
