@@ -147,10 +147,6 @@ struct lan865x_priv {
     unsigned long stall_since; /* jiffies, 0 = no stall suspected */
     u64 stall_tftx;            /* chip TFTX when the suspicion started */
     unsigned long wait_since;  /* jiffies, 0 = not waiting for a PLCA transmit opportunity */
-    u16 txc_foot_max;          /* largest footer TXC seen (5 bits, saturates at 31) */
-    u16 txc_buf_max;           /* largest OA_BUFSTS.TXC read (TX buffer empty), 0 = unknown */
-    bool txc_checked;          /* OA_BUFSTS read in this held-frames episode */
-    u64 txc_idle_host;         /* tx_packets when OA_BUFSTS.TXC last read full */
     u64 replay_host_base;      /* tx_packets at the last (re)start */
     u64 replay_chip_base;      /* chip FTX at the last (re)start */
     u64 replay_att_base;       /* chip TFTX at the last (re)start */

@@ -175,6 +175,19 @@ frame corrupted between the host and the MAC-PHY is not sent with a newly comput
 - When on, the driver pads short frames to 60 bytes and appends the CRC-32 FCS. A frame the MAC-PHY finds with a bad FCS sets
   `STATUS0.TXFCSE`: counted in `ethtool -S <if>` as `oa_tx_fcs_errors` and logged (rate limited).
 
+### TX stall detection
+
+- Every `stats_ms` (default 100 ms) the driver checks the transmit path. It reports a stall when a frame is waiting to be sent,
+  the MAC-PHY reports no transmit credits, and no frame has finished for `tx_stall_ms` (default 2000 ms). It then recovers
+  as set by `recovery_mode` (default: MAC-PHY reset and reconfiguration). Counted in `ethtool -S <if>` as
+  `drv_tx_stall_detected` and `drv_recovery_*`.
+- Detection needs a frame waiting in the driver. If transmission stops while nothing more is queued, the stall is found at
+  the next transmit attempt: within about the time to the next frame plus `tx_stall_ms`. When the neighbour entry of the
+  peer has failed (no ARP reply, because nothing goes out), the next frame is an ARP retry, so the bound is about the ARP
+  retry interval plus `tx_stall_ms` (about 31 s measured with the defaults).
+- The transmit credits cannot show a frame that is still inside the MAC-PHY (t1s-oaspi returns them as soon as the frame is
+  in its MAC transmit buffer), so the driver does not detect that case on its own.
+
 # 5. Clean
 
 ```bash
