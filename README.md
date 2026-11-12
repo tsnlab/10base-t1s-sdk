@@ -54,6 +54,10 @@ MACADDR=none → Random MAC (runtime)
 
 DISABLE_DIPSWITCH=1 → Disable DIP switch extension
 
+TIMESTAMP=1 or TIMESTAMP=0 (default is 1) → `TIMESTAMP=1` is the LAN8650/1 build (frame timestamps, LAN865x PTP).
+**The TSN Lab T1S chip (`t1s-oaspi`) needs `TIMESTAMP=0`** (it has its own PTP clock and timestamp handling in that build); a
+`TIMESTAMP=1` build does not probe it (dmesg: `t1s-oaspi needs a TIMESTAMP=0 build`). The LAN8650/1 run on both builds.
+
 Examples
 ```bash
 # Build for Raspberry Pi 4, default MAC, DIP switch enabled
@@ -76,6 +80,10 @@ $ make BOARD=rpi4 MACADDR=none
 ```bash
 # Build with default MAC, DIP switch disabled
 $ make BOARD=rpi4 DISABLE_DIPSWITCH=1
+```
+```bash
+# Build for Raspberry Pi 5 and the TSN Lab T1S chip (t1s-oaspi)
+$ make BOARD=rpi5 TIMESTAMP=0
 ```
 
 The result is:
@@ -181,8 +189,8 @@ its last chunk is in, as TC6 7.5.1 / 7.5.2 expect.
 - Module parameter `t1s_txfcs`: `-1` (default) on where available, else quietly off; `1` on, with a warning if not available;
   `0` off. Later with `ethtool --set-priv-flags <if> tx-fcs-check on|off` (only while the interface is down);
   `ethtool --show-priv-flags <if>` shows the state.
-- Only when the MAC-PHY reports `STDCAP.TXFCSVC = 1` (LAN8650/1: 0, so off) and only in the `TIMESTAMP=0` build - **the
-  default `TIMESTAMP=1` build cannot use it**, so there the deviation above applies. Asked for explicitly (`t1s_txfcs=1` or ethtool) where it is not
+- Only when the MAC-PHY reports `STDCAP.TXFCSVC = 1` (LAN8650/1: 0, so off) and only in the `TIMESTAMP=0` build - the build the
+  T1S chip needs anyway (see 3. Build the Driver; the `TIMESTAMP=1` build is for the LAN8650/1). Asked for explicitly (`t1s_txfcs=1` or ethtool) where it is not
   available, the driver logs a warning and keeps it off (ethtool returns `EOPNOTSUPP`).
 - When on, the driver pads short frames to 60 bytes and appends the CRC-32 FCS. A frame the MAC-PHY finds with a bad FCS sets
   `STATUS0.TXFCSE`: counted in `ethtool -S <if>` as `oa_tx_fcs_errors` and logged (rate limited).
