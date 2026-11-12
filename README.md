@@ -166,12 +166,24 @@ direction (full duplex SPI), more than the 10 Mb/s of the line. 25 MHz gives mor
 ### Transmit FCS check (t1s-oaspi)
 
 With `CONFIG0.TXFCSVE` (OPEN Alliance TC6 v1.1) the host appends the FCS to every transmitted frame and the MAC-PHY checks it, so a
-frame corrupted between the host and the MAC-PHY is not sent with a newly computed (good) FCS. Off by default.
+frame corrupted between the host and the MAC-PHY is not sent with a newly computed (good) FCS. **On by default where it works**
+(`TIMESTAMP=0` build and a MAC-PHY with `STDCAP.TXFCSVC = 1`, e.g. the TSN Lab T1S chip).
 
-- Turn it on at load time with the module parameter `t1s_txfcs=1`, or later with `ethtool --set-priv-flags <if> tx-fcs-check on`
-  (`off` to turn it off; only while the interface is down). `ethtool --show-priv-flags <if>` shows the state.
-- Only when the MAC-PHY reports `STDCAP.TXFCSVC = 1`; otherwise the driver logs a warning and keeps it off (ethtool returns
-  `EOPNOTSUPP`). Only in the `TIMESTAMP=0` build.
+Why on by default: without a host FCS the MAC-PHY cannot tell a frame corrupted on the SPI (for example one SCK edge too many inside
+a chunk shifts every following bit) from a good one, and sends it with a new, good FCS - the receiver cannot see it. The T1S chip
+has a deliberate deviation from TC6 v1.1 7.5.1 / 7.5.2 for that case (D1): with `TXFCSVE = 0` it drops a frame whose last chunk
+was followed by a header parity error (`STATUS0.HDRE`) or a CSn cut (`LOFE`) in the same CSn. That catches only some of the
+corrupted frames (in simulation 1 of 16 one-edge slips; the others are sent shifted), and the dropped frame is lost: the driver
+does not send it again, because it may already have been sent (TC6 7.5.1 treats it as completed). With `TXFCSVE = 1` the
+MAC-PHY checks every frame against the host FCS, drops the corrupted ones (`STATUS0.TXFCSE`) and commits a good one as soon as
+its last chunk is in, as TC6 7.5.1 / 7.5.2 expect.
+
+- Module parameter `t1s_txfcs`: `-1` (default) on where available, else quietly off; `1` on, with a warning if not available;
+  `0` off. Later with `ethtool --set-priv-flags <if> tx-fcs-check on|off` (only while the interface is down);
+  `ethtool --show-priv-flags <if>` shows the state.
+- Only when the MAC-PHY reports `STDCAP.TXFCSVC = 1` (LAN8650/1: 0, so off) and only in the `TIMESTAMP=0` build - **the
+  default `TIMESTAMP=1` build cannot use it**, so there D1 applies. Asked for explicitly (`t1s_txfcs=1` or ethtool) where it is not
+  available, the driver logs a warning and keeps it off (ethtool returns `EOPNOTSUPP`).
 - When on, the driver pads short frames to 60 bytes and appends the CRC-32 FCS. A frame the MAC-PHY finds with a bad FCS sets
   `STATUS0.TXFCSE`: counted in `ethtool -S <if>` as `oa_tx_fcs_errors` and logged (rate limited).
 
