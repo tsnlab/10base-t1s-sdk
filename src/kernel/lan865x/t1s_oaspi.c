@@ -81,7 +81,6 @@ MODULE_PARM_DESC(t1s_txfcs, "t1s-oaspi: 1 = host appends the TX FCS and the MAC-
 #endif
 
 static int t1s_rxfcs_setup(struct oa_tc6* tc6, struct lan865x_priv* priv) {
-    struct net_device* nd = oa_tc6_get_netdev(tc6);
     bool on;
     u32 v;
     int ret;
@@ -97,10 +96,23 @@ static int t1s_rxfcs_setup(struct oa_tc6* tc6, struct lan865x_priv* priv) {
     on = !!(v & T1S_MAC_RXCFG_RXFCSP);
 #ifndef FRAME_TIMESTAMP_ENABLE
     oa_tc6_set_rx_fcs(tc6, on ? ETH_FCS_LEN : 0);
-#endif
     if (on) {
+        struct net_device* nd = oa_tc6_get_netdev(tc6);
+
         nd->hw_features |= NETIF_F_RXFCS; /* ethtool -K rx-fcs on keeps it */
     }
+#else
+    /* TIMESTAMP=1 build: oa_tc6_prcs_rx_frame_end() always cuts the last 4 bytes
+     * of a received frame, so NETIF_F_RXFCS is not offered (ethtool -K rx-fcs on
+     * would change nothing), and that cut is right only while the MAC passes the
+     * FCS. A MAC that reads RXFCSP back as 0 already strips it: say so.
+     */
+    if (!on) {
+        dev_warn(&priv->spi->dev,
+                 "t1s-oaspi: MAC_RXCFG.RXFCSP reads 0 (0x%08x) but the TIMESTAMP=1 build always cuts 4 bytes: received frames lose their last 4 bytes\n",
+                 v);
+    }
+#endif
     if (on != priv->t1s_rxfcs) {
         dev_info(&priv->spi->dev, "t1s-oaspi: received FCS %s\n",
                  on ? "passed by the MAC, stripped by the driver" : "stripped by the MAC (no MAC_RXCFG)");
