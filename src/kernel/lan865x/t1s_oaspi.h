@@ -37,6 +37,8 @@ struct spi_device;
 #define T1S_MMS1_MCAST_HASH_L 0x00010005
 #define T1S_MMS1_MCAST_HASH_H 0x00010006
 #define T1S_MMS1_MAC_CAP 0x00010007
+#define T1S_MMS1_MAC_RXCFG 0x0001000A  /* .0 RXFCSP: 1 = received frames keep pad + FCS (reset 1); absent = reads 0 */
+#define T1S_MAC_RXCFG_RXFCSP BIT(0)
 #define T1S_MMS1_TS_CFG 0x00010016 /* .7 FTSE .6 FTSS (t1s_ptp.c) */
 
 #define T1S_DEF_SPI_HZ 12500000u

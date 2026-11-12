@@ -128,6 +128,10 @@ netdev_tx_t oa_tc6_start_xmit(struct oa_tc6* tc6, struct sk_buff* skb);
 netdev_tx_t oa_tc6_start_xmit_tsc(struct oa_tc6* tc6, struct sk_buff* skb, u8 tsc);
 void oa_tc6_set_frame_ts(struct oa_tc6* tc6, u8 rx_ts_len,
                          void (*rx_ts_cb)(void* ctx, struct sk_buff* skb, const u8* ts), void* ctx, bool rtsa);
+/* Received frames end with fcs_len (0 or 4) bytes of FCS: oa_tc6 strips them
+ * unless NETIF_F_RXFCS is on (set from the chip_init hook).
+ */
+void oa_tc6_set_rx_fcs(struct oa_tc6* tc6, u8 fcs_len);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 int oa_tc6_zero_align_receive_frame_enable(struct oa_tc6* tc6);
 

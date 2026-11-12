@@ -80,6 +80,35 @@ MODULE_PARM_DESC(t1s_txfcs, "t1s-oaspi: 1 = host appends the TX FCS and the MAC-
 #define T1S_TXFCS_BUILD false
 #endif
 
+static int t1s_rxfcs_setup(struct oa_tc6* tc6, struct lan865x_priv* priv) {
+    struct net_device* nd = oa_tc6_get_netdev(tc6);
+    bool on;
+    u32 v;
+    int ret;
+
+    ret = oa_tc6_write_register(tc6, T1S_MMS1_MAC_RXCFG, T1S_MAC_RXCFG_RXFCSP);
+    if (ret) {
+        return ret;
+    }
+    ret = oa_tc6_read_register(tc6, T1S_MMS1_MAC_RXCFG, &v);
+    if (ret) {
+        return ret;
+    }
+    on = !!(v & T1S_MAC_RXCFG_RXFCSP);
+#ifndef FRAME_TIMESTAMP_ENABLE
+    oa_tc6_set_rx_fcs(tc6, on ? ETH_FCS_LEN : 0);
+#endif
+    if (on) {
+        nd->hw_features |= NETIF_F_RXFCS; /* ethtool -K rx-fcs on keeps it */
+    }
+    if (on != priv->t1s_rxfcs) {
+        dev_info(&priv->spi->dev, "t1s-oaspi: received FCS %s\n",
+                 on ? "passed by the MAC, stripped by the driver" : "stripped by the MAC (no MAC_RXCFG)");
+    }
+    priv->t1s_rxfcs = on;
+    return 0;
+}
+
 /* CONFIG0.TXFCSVE and the STATUS0.TXFCSE interrupt mask for priv->t1s_txfcs_req.
  * *config0 is the CONFIG0 value to write (TXFCSVE set or cleared here).
  */
@@ -196,6 +225,17 @@ int t1s_oaspi_chip_init(struct oa_tc6* tc6) {
         return ret;
     }
 
+    /* Received FCS: MAC_RXCFG.RXFCSP = 1 (also its reset value) makes the
+     * MAC pass every frame as received, pad and FCS included, like the
+     * LAN865x; oa_tc6 strips the FCS unless NETIF_F_RXFCS (ethtool -K rx-fcs
+     * on).  A MAC without the register (older bitstreams, TEMAC board
+     * builds) reads 0 there and strips the FCS itself: nothing to strip.
+     */
+    ret = t1s_rxfcs_setup(tc6, priv);
+    if (ret) {
+        return ret;
+    }
+
     /* same as LAN865x NCR = TXEN | RXEN, NCFGR = no promiscuous */
     ret = oa_tc6_read_register(tc6, T1S_MMS1_MAC_CTRL, &v);
     if (ret) {
@@ -301,7 +341,7 @@ static const struct {
     {0x00000000, "OA_ID"},     {0x00000001, "OA_PHYID"},  {0x00000002, "OA_STDCAP"},  {0x00000004, "OA_CONFIG0"},
     {0x00000008, "OA_STATUS0"}, {0x00000009, "OA_STATUS1"}, {0x0000000B, "OA_BUFSTS"}, {0x0000000C, "OA_IMASK0"},
     {0x0000000D, "OA_IMASK1"}, {0x00010000, "MAC_ID"},    {0x00010001, "MAC_CTRL"},   {0x00010002, "MAC_ADDR_L"},
-    {0x00010003, "MAC_ADDR_H"}, {0x00010005, "MC_HASH_L"}, {0x00010006, "MC_HASH_H"}, {0x00010007, "MAC_CAP"},
+    {0x00010003, "MAC_ADDR_H"}, {0x00010005, "MC_HASH_L"}, {0x00010006, "MC_HASH_H"}, {0x00010007, "MAC_CAP"}, {0x0001000A, "MAC_RXCFG"},
     {0x00010008, "MAC_IRQ_STS"}, {0x00010016, "TS_CFG"},   {0x00010017, "TS_STS"},     {0x00010018, "TS_IMSK"},
     {0x00010019, "TS_TX_LAT"},  {0x0001001A, "TS_RX_LAT"}, {0x00010020, "PTP_CMD"},    {0x00010024, "PTP_INC"},
     {0x00010010, "TTSCAH"},     {0x00010011, "TTSCAL"},    {0x00010012, "TTSCBH"},     {0x00010013, "TTSCBL"},

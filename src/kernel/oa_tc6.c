@@ -198,6 +198,11 @@ struct oa_tc6 {
 	 */
 	u8 rx_ts_len;
 	bool rx_ts_rtsa;
+	/* rx_fcs_len: bytes of FCS at the end of a received frame (0 or 4),
+	 * set by the MAC driver (oa_tc6_set_rx_fcs()); stripped unless
+	 * NETIF_F_RXFCS.  The LAN865x path never sets it.
+	 */
+	u8 rx_fcs_len;
 	void (*rx_ts_cb)(void *ctx, struct sk_buff *skb, const u8 *ts);
 	void *rx_ts_ctx;
 	u8 ongoing_tx_tsc;
@@ -1506,6 +1511,18 @@ static int oa_tc6_process_rx_chunk_footer(struct oa_tc6 *tc6, u32 footer,
 
 static void oa_tc6_submit_rx_skb(struct oa_tc6 *tc6)
 {
+#ifndef FRAME_TIMESTAMP_ENABLE
+	u8 fcs = READ_ONCE(tc6->rx_fcs_len);
+
+	if (fcs && !(tc6->netdev->features & NETIF_F_RXFCS)) {
+		if (tc6->rx_skb->len < ETH_HLEN + fcs) {
+			tc6->netdev->stats.rx_length_errors++;
+			oa_tc6_cleanup_ongoing_rx_skb(tc6);	/* counts rx_dropped */
+			return;
+		}
+		skb_trim(tc6->rx_skb, tc6->rx_skb->len - fcs);
+	}
+#endif /* FRAME_TIMESTAMP_ENABLE */
 	tc6->rx_skb->protocol = eth_type_trans(tc6->rx_skb, tc6->netdev);
 	tc6->netdev->stats.rx_packets++;
 	tc6->netdev->stats.rx_bytes += tc6->rx_skb->len;
@@ -1541,11 +1558,14 @@ static int oa_tc6_update_rx_skb(struct oa_tc6 *tc6, u8 *payload, u8 length)
  * buffer pointer. We should release, if a valid pointer is found before
  * allocating a new one.
  */
+/* room for an 802.1Q tag (VLAN_HLEN): a 1522-byte tagged frame plus its FCS */
+#define OA_TC6_RX_VLAN_LEN 4
+
 static int oa_tc6_allocate_rx_skb(struct oa_tc6 *tc6)
 {
 	oa_tc6_cleanup_ongoing_rx_skb(tc6);
 	tc6->rx_skb = netdev_alloc_skb_ip_align(tc6->netdev, tc6->netdev->mtu +
-						ETH_HLEN + ETH_FCS_LEN);
+						ETH_HLEN + OA_TC6_RX_VLAN_LEN + ETH_FCS_LEN);
 	if (!tc6->rx_skb) {
 		tc6->netdev->stats.rx_dropped++;
 		return -ENOMEM;
@@ -2599,6 +2619,15 @@ void oa_tc6_set_frame_ts(struct oa_tc6 *tc6, u8 rx_ts_len,
 	WRITE_ONCE(tc6->rx_ts_len, rx_ts_len);
 }
 EXPORT_SYMBOL_GPL(oa_tc6_set_frame_ts);
+
+/* The MAC-PHY passes the FCS of received frames (fcs_len 4) or strips it (0).
+ * Called by the chip_init hook, before CONFIG0.SYNC.
+ */
+void oa_tc6_set_rx_fcs(struct oa_tc6 *tc6, u8 fcs_len)
+{
+	WRITE_ONCE(tc6->rx_fcs_len, fcs_len);
+}
+EXPORT_SYMBOL_GPL(oa_tc6_set_rx_fcs);
 #endif /* FRAME_TIMESTAMP_ENABLE */
 
 void oa_tc6_set_fatal_cb(struct oa_tc6 *tc6, void (*cb)(void *ctx), void *ctx)
