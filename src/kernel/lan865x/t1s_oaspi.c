@@ -68,11 +68,16 @@ MODULE_PARM_DESC(t1s_spi_hz, "t1s-oaspi: SPI clock in Hz (0 = DT spi-max-frequen
  * bad one in STATUS0.TXFCSE (ethtool -S oa_tx_fcs_errors, kernel log).  Only
  * when the MAC-PHY has STDCAP.TXFCSVC = 1, and only in the TIMESTAMP=0 build
  * (t1s_oaspi_xmit() is the transmit path that appends the FCS).
+ * On by default where it works: without it the MAC-PHY cannot tell a frame
+ * corrupted on the SPI (e.g. one SCK edge too many) from a good one and sends
+ * it with a new, good FCS; the deliberate TC6 7.5.1 deviation D1 of the T1S
+ * chip catches only a few of those and drops instead (see README).
  */
-static unsigned int t1s_txfcs;
-module_param(t1s_txfcs, uint, 0444);
-MODULE_PARM_DESC(t1s_txfcs, "t1s-oaspi: 1 = host appends the TX FCS and the MAC-PHY checks it (CONFIG0.TXFCSVE, needs STDCAP.TXFCSVC); "
-                            "also ethtool --set-priv-flags <if> tx-fcs-check on|off while the interface is down. Default 0");
+static int t1s_txfcs = -1;
+module_param(t1s_txfcs, int, 0444);
+MODULE_PARM_DESC(t1s_txfcs, "t1s-oaspi: host appends the TX FCS and the MAC-PHY checks it (CONFIG0.TXFCSVE, needs STDCAP.TXFCSVC and "
+                            "the TIMESTAMP=0 build): -1 = on where available, else quietly off (default), 1 = on (warn if not "
+                            "available), 0 = off; also ethtool --set-priv-flags <if> tx-fcs-check on|off while the interface is down");
 
 #ifndef FRAME_TIMESTAMP_ENABLE
 #define T1S_TXFCS_BUILD true
@@ -134,7 +139,7 @@ static int t1s_txfcs_setup(struct oa_tc6* tc6, struct lan865x_priv* priv, u32* c
         return ret;
     }
     on = priv->t1s_txfcs_req && T1S_TXFCS_BUILD && (cap & T1S_TC6_STDCAP_TXFCSVC);
-    if (priv->t1s_txfcs_req && !on) {
+    if (priv->t1s_txfcs_req && !on && !priv->t1s_txfcs_auto) {
         dev_warn(&priv->spi->dev, "t1s-oaspi: TX FCS check not available (STDCAP 0x%08x, TXFCSVC %u%s), host FCS off\n", cap,
                  !!(cap & T1S_TC6_STDCAP_TXFCSVC), T1S_TXFCS_BUILD ? "" : ", TIMESTAMP=1 build");
     }
@@ -163,7 +168,8 @@ int t1s_oaspi_probe_cfg(struct lan865x_priv* priv, struct spi_device* spi) {
 
     of_property_read_u32(spi->dev.of_node, "tsnlab,plca-node-id", &v);
     priv->node_id = v & 0xFF;
-    priv->t1s_txfcs_req = !!t1s_txfcs;
+    priv->t1s_txfcs_req = t1s_txfcs != 0;
+    priv->t1s_txfcs_auto = t1s_txfcs < 0;
 
     /* TC6 v1.1 7.1: SPI mode 0 (CPOL 0, CPHA 0) */
     hz = t1s_spi_hz ? t1s_spi_hz : (spi->max_speed_hz ? spi->max_speed_hz : T1S_DEF_SPI_HZ);
@@ -546,6 +552,7 @@ static int t1s_ethtool_set_priv_flags(struct net_device* netdev, u32 flags) {
     struct lan865x_priv* priv = netdev_priv(netdev);
     bool want = flags & T1S_PRIV_FLAG_TXFCS;
     bool old_req = priv->t1s_txfcs_req;
+    bool old_auto = priv->t1s_txfcs_auto;
     u32 v;
     int ret;
 
@@ -559,6 +566,7 @@ static int t1s_ethtool_set_priv_flags(struct net_device* netdev, u32 flags) {
 
     mutex_lock(&priv->hw_lock);
     priv->t1s_txfcs_req = want;
+    priv->t1s_txfcs_auto = false; /* an explicit choice: warn if it cannot be had */
     ret = oa_tc6_read_register(priv->tc6, T1S_TC6_CONFIG0, &v);
     if (!ret) {
         ret = t1s_txfcs_setup(priv->tc6, priv, &v);
@@ -571,6 +579,7 @@ static int t1s_ethtool_set_priv_flags(struct net_device* netdev, u32 flags) {
     }
     if (ret) {
         priv->t1s_txfcs_req = old_req && READ_ONCE(priv->t1s_txfcs);
+        priv->t1s_txfcs_auto = old_auto;
     }
     mutex_unlock(&priv->hw_lock);
     return ret;
